@@ -257,7 +257,7 @@ export default function Home() {
       setStep("verifying");
       setProgressMessage("Verifying data sources...");
       const verifyResults = await Promise.all(
-        variables.map(async (v) => {
+        variables.map(async (v: { source: string; term: string }) => {
           try {
             const verifyRes = await fetch("/api/verify-data", {
               method: "POST",
@@ -305,6 +305,7 @@ export default function Home() {
         attempt?: number;
         corrections?: { error: string }[];
         message?: string;
+        error?: string;
         stdout?: string;
         stderr?: string;
         interpretation?: string;
