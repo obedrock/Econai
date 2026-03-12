@@ -1,11 +1,8 @@
 import { NextResponse } from "next/server";
-import { writeFile, unlink } from "fs/promises";
-import { tmpdir } from "os";
-import { join } from "path";
-import { spawn } from "child_process";
 import Anthropic from "@anthropic-ai/sdk";
-import { saveRegression } from "@/lib/db";
 import { addLesson, addAutoFix, sanitizeRCode } from "@/lib/claude-lessons";
+
+const R_API_URL = process.env.R_API_URL || "http://localhost:3001";
 
 const COMPLETE_SCRIPT_PROMPT = `You complete truncated R code. The user will paste R code that was cut off. Return ONLY the complete, runnable R script as plain text. Do not wrap in markdown or code fences. Do not add explanations. The script must end with a closing comment: # END OF SCRIPT. Preserve the existing code and add any missing parts (e.g. closing braces, the CHART_DATA block, tryCatch closure).`;
 
@@ -55,9 +52,6 @@ Reply with only your validation text, no extra heading.`;
 const MAX_ATTEMPTS = 2;
 const FIX_MODEL = "claude-3-5-haiku-20241022";
 
-/** R script preamble to force UTF-8 / English locale on Windows. */
-const R_ENCODING_PREAMBLE = 'Sys.setlocale("LC_ALL", "English")\noptions(encoding = "UTF-8")\n';
-
 /** Strip non-ASCII / corrupted chars so Windows encoding doesn't break the response. */
 function sanitizeEncoding(s: string): string {
   return (s || "").replace(/\uFFFD/g, "").replace(/[^\x00-\x7F]/g, "");
@@ -101,41 +95,17 @@ function getBrokenSnippet(fullCode: string, errorText: string): string {
   return first + "\n...\n" + last;
 }
 
-async function runRCode(
-  code: string,
-  fredKey: string
-): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  const codeWithPreamble = R_ENCODING_PREAMBLE + code;
-  const tmpPath = join(tmpdir(), `econai-${Date.now()}.R`);
-  await writeFile(tmpPath, codeWithPreamble, "utf-8");
-  try {
-    const result = await new Promise<{ stdout: string; stderr: string; exitCode: number }>((resolve) => {
-      const child = spawn("Rscript", [tmpPath], {
-        env: { ...process.env, FRED_API_KEY: fredKey, LANG: "en_US.UTF-8", R_ENCODING: "UTF-8" },
-        shell: true,
-      });
-      let stdout = "";
-      let stderr = "";
-      child.stdout?.on("data", (d: Buffer) => {
-        stdout += d.toString("utf8").replace(/[^\x00-\x7F]/g, "");
-      });
-      child.stderr?.on("data", (d: Buffer) => {
-        stderr += d.toString("utf8").replace(/[^\x00-\x7F]/g, "");
-      });
-      child.on("close", (code) => resolve({ stdout, stderr, exitCode: code ?? 0 }));
-    });
-    return {
-      stdout: sanitizeEncoding(result.stdout),
-      stderr: sanitizeEncoding(result.stderr),
-      exitCode: result.exitCode,
-    };
-  } finally {
-    try {
-      await unlink(tmpPath);
-    } catch {
-      // ignore
-    }
-  }
+async function runRCode(code: string): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  const response = await fetch(`${R_API_URL}/run`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code }),
+  });
+  const result = (await response.json()) as { stdout?: string; stderr?: string; exitCode?: number; error?: string };
+  const stdout = sanitizeEncoding(result.stdout ?? "");
+  const stderr = sanitizeEncoding(result.stderr ?? result.error ?? (response.ok ? "" : "Remote R run failed"));
+  const exitCode = response.ok ? (result.exitCode ?? 0) : 1;
+  return { stdout, stderr, exitCode };
 }
 
 async function askClaudeToFixCode(
@@ -262,8 +232,7 @@ export async function POST(request: Request) {
       }
     }
 
-    const fredKey = process.env.FRED_API_KEY ?? "";
-    const result = await runRCode(codeToRun, fredKey);
+    const result = await runRCode(codeToRun);
 
     const runError = result.stderr || result.stdout || "R script failed";
     if (result.exitCode !== 0 && attempt < MAX_ATTEMPTS && isErrorFixable(runError)) {
