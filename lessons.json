@@ -1,0 +1,48 @@
+{
+  "lessons": [
+    {
+      "id": 1,
+      "error": "object not found for forex tickers",
+      "cause": "getSymbols with auto.assign=TRUE creates EURUSD.X not EURUSD",
+      "fix": "always use auto.assign=FALSE for ALL getSymbols calls",
+      "timesEncountered": 3
+    },
+    {
+      "id": 2,
+      "error": "Close column not found",
+      "cause": "trying to access $Close directly instead of using Cl() function",
+      "fix": "always use Cl() to extract closing prices, never $Close",
+      "timesEncountered": 3
+    },
+    {
+      "id": 3,
+      "error": "unexpected end of input",
+      "cause": "R code getting truncated before completion",
+      "fix": "set max_tokens to 4096 and always end script with # END OF SCRIPT",
+      "timesEncountered": 2
+    },
+    {
+      "id": 4,
+      "error": "no applicable method for Cl applied to non-xts object",
+      "cause": "the object returned by getSymbols with auto.assign=FALSE is already an xts object but sometimes Cl() fails if the data has no volume column like forex",
+      "fix": "for forex tickers use this exact pattern: eurusd <- getSymbols('EURUSD=X', src='yahoo', auto.assign=FALSE); eurusd_close <- eurusd[,4] instead of Cl(eurusd)",
+      "timesEncountered": 4
+    },
+    {
+      "id": 5,
+      "error": "wrong ticker or variable name for oil",
+      "cause": "using CLF or auto.assign=TRUE for oil futures",
+      "fix": "always use auto.assign=FALSE and assign oil futures (CL=F) to a variable named crude_oil, e.g. crude_oil <- getSymbols('CL=F', src='yahoo', auto.assign=FALSE). Never use CLF. Unless the user specifically specifies another symbol or name.",
+      "timesEncountered": 1
+    }
+  ],
+  "autoFixes": [
+    {
+      "id": 1,
+      "description": "Fix broken cloud.r-project URLs",
+      "pattern": "\"cloud\"r\"",
+      "replacement": "\"https://cloud.r-project.org\"",
+      "timesApplied": 0
+    }
+  ]
+}
