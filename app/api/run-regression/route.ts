@@ -180,6 +180,8 @@ export async function POST(request: Request) {
     }
 
     let codeToRun = code;
+    // Convert JS-style // comments to R # comments (Claude sometimes outputs these)
+    codeToRun = codeToRun.replace(/^\/\//gm, "#");
     codeToRun = await sanitizeRCode(codeToRun);
     if (!codeToRun.includes("# END OF SCRIPT")) {
       const apiKey = process.env.ANTHROPIC_API_KEY;

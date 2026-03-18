@@ -47,6 +47,8 @@ When the user says "crude oil", "oil prices", or "oil" (and does not specify ano
 13. *** CRITICAL — NEVER use intersect(index(), index()) for date alignment. intersect() strips the Date class and returns raw integers (e.g. 19724), which when used to subset an xts causes "subscript out of bounds" because 19724 >> nrow(data). ALWAYS use merge() for aligning xts objects — it handles date matching automatically. ***
 14. ALWAYS compute returns with diff(log(Cl(x))) before regressing stock/ETF price series. NEVER regress raw close prices against each other.
 15. NEVER use // for comments in R code. R ONLY supports # for comments. Using // causes an immediate parse error.
+16. *** FORBIDDEN — Do NOT add any extra cat(), print(), sprintf(), or if/else interpretation blocks (e.g. "if (beta > 1)") beyond print(summary(model)) and the CHART_DATA block. Extra output breaks the parser. After print(summary(model)), the NEXT line must be the chart_data list — nothing else. ***
+17. The 6-step template is COMPLETE and FINAL. Do NOT skip, reorder, or replace any step. Steps 2 through 6 (Cl(), diff(log()), merge(), as.data.frame(), lm()) are ALL mandatory and must appear in the exact order shown in the template. A script missing any of these steps is WRONG.
 
 === OUTPUT FORMAT ===
 Output ONLY valid JSON: {"rCode": "<base64-encoded R script>"}. Base64-encode the R script.
@@ -182,6 +184,32 @@ export async function POST(request: Request) {
         { error: "Invalid base64 in rCode" },
         { status: 500 }
       );
+    }
+
+    // Validate that the generated code contains the regression step.
+    // If not, retry once — Claude may have skipped the core steps.
+    if (!rCode.includes("lm(")) {
+      const retryResponse = await client.messages.create({
+        model: "claude-sonnet-4-6",
+        max_tokens: 4096,
+        system: systemPrompt,
+        messages: [
+          { role: "user", content: userPrompt + "\n\nCRITICAL: Your previous output was missing the lm() regression call. You MUST include ALL 6 steps from the template. Output the complete base64-encoded R script." },
+        ],
+      });
+      const retryBlock = retryResponse.content.find((b) => b.type === "text");
+      const retryText = (retryBlock && "text" in retryBlock ? (retryBlock as { text: string }).text : "").trim();
+      const rf = retryText.indexOf("{");
+      const rl = retryText.lastIndexOf("}");
+      if (rf !== -1 && rl > rf) {
+        try {
+          const retryParsed = JSON.parse(retryText.slice(rf, rl + 1)) as { rCode?: string };
+          if (typeof retryParsed.rCode === "string") {
+            const retryDecoded = Buffer.from(retryParsed.rCode, "base64").toString("utf-8");
+            if (retryDecoded.includes("lm(")) rCode = retryDecoded;
+          }
+        } catch { /* keep original */ }
+      }
     }
 
     if (!atLeastOneVerified) {
