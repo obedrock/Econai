@@ -43,7 +43,7 @@ When the user says "crude oil", "oil prices", or "oil" (and does not specify ano
 9. ALWAYS set options(HTTPUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36") immediately after loading libraries and BEFORE any getSymbols() call. This prevents Yahoo Finance from blocking downloads in server environments.
 10. ALWAYS end with the CHART_DATA JSON output.
 11. Always end your R script with a closing comment like # END OF SCRIPT so it is clear the script is complete.
-12. The column names in colnames(df) must EXACTLY match the variable names in lm(). Use the SAME names in colnames(), in lm(), and in chart_data.
+12. The column names in colnames(df) must EXACTLY match the variable names in lm(). Use the SAME names in colnames() and in lm(). The chart_data block uses df[i,1] and df[i,2] (column indices) — never change these to column names.
 
 === OUTPUT FORMAT ===
 Output ONLY valid JSON: {"rCode": "<base64-encoded R script>"}. Base64-encode the R script.
@@ -80,8 +80,8 @@ tryCatch({
   model <- lm(NAME1 ~ NAME2, data=df)
   print(summary(model))
   chart_data <- list(
-    scatter = lapply(1:nrow(df), function(i) list(x=df$NAME2[i], y=df$NAME1[i])),
-    timeseries = lapply(1:nrow(df), function(i) list(date=rownames(df)[i], y=df$NAME1[i], x=df$NAME2[i])),
+    scatter = lapply(seq_len(nrow(df)), function(i) list(x=df[i,2], y=df[i,1])),
+    timeseries = lapply(seq_len(nrow(df)), function(i) list(date=rownames(df)[i], y=df[i,1], x=df[i,2])),
     coefficients = as.list(coef(model))
   )
   cat("\\nCHART_DATA:", jsonlite::toJSON(chart_data, auto_unbox=TRUE), "\\n")
@@ -134,7 +134,7 @@ export async function POST(request: Request) {
 
     const lessonsBlock = await getLessonsFormattedForPrompt();
     const systemPrompt = lessonsBlock + CODE_SYSTEM_PREFIX(list) + SYSTEM_PROMPT_BASE;
-    const userPrompt = `User request: ${message}\n\nUse TICKER1="${ticker1}" and TICKER2="${ticker2}". Use NAME1="${name1}" and NAME2="${name2}" everywhere (in colnames(df), in lm(${name1} ~ ${name2}, data=df), and in chart_data). Choose START/END from the user's date range.`;
+    const userPrompt = `User request: ${message}\n\nUse TICKER1="${ticker1}" and TICKER2="${ticker2}". Use NAME1="${name1}" and NAME2="${name2}" in colnames(df) and in lm(${name1} ~ ${name2}, data=df). The chart_data block already uses column indices (df[i,1], df[i,2]) — do NOT change those to column names. Choose START/END from the user's date range.`;
 
     const client = new Anthropic({ apiKey });
     const response = await client.messages.create({
