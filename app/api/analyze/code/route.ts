@@ -41,7 +41,7 @@ When the user says "crude oil", "oil prices", or "oil" (and does not specify ano
 7. ALWAYS wrap the script in tryCatch().
 8. ALWAYS install packages with suppressMessages(suppressWarnings()).
 9. ALWAYS set options(HTTPUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36") immediately after loading libraries and BEFORE any getSymbols() call. This prevents Yahoo Finance from blocking downloads in server environments.
-10. ALWAYS end with the CHART_DATA JSON output wrapped in exactly these delimiters: cat("\\n---CHART_DATA_BEGIN---\\n") then cat(jsonlite::toJSON(...)) then cat("\\n---CHART_DATA_END---\\n"). Never use a bare cat("CHART_DATA:", ...) format. IMPORTANT: to keep the JSON small, sample to at most 500 rows using this EXACT block (no inline if-else): n_rows <- nrow(df)\nif (n_rows > 500) {\n  idx <- round(seq(1, n_rows, length.out=500))\n} else {\n  idx <- seq_len(n_rows)\n}\n then use idx in scatter and timeseries lapply calls.
+10. ALWAYS end with the CHART_DATA JSON output wrapped in exactly these delimiters: cat("\\n---CHART_DATA_BEGIN---\\n") then cat(jsonlite::toJSON(...)) then cat("\\n---CHART_DATA_END---\\n"). Never use a bare cat("CHART_DATA:", ...) format.
 11. Always end your R script with a closing comment like # END OF SCRIPT so it is clear the script is complete.
 12. The column names in colnames(df) must EXACTLY match the variable names in lm(). Use the SAME names in colnames() and in lm(). The chart_data block uses df[i,1] and df[i,2] (column indices) — never change these to column names.
 
@@ -79,15 +79,9 @@ tryCatch({
   # Step 6: regression using those exact column names
   model <- lm(NAME1 ~ NAME2, data=df)
   print(summary(model))
-  n_rows <- nrow(df)
-  if (n_rows > 500) {
-    idx <- round(seq(1, n_rows, length.out=500))
-  } else {
-    idx <- seq_len(n_rows)
-  }
   chart_data <- list(
-    scatter = lapply(idx, function(i) list(x=df[i,2], y=df[i,1])),
-    timeseries = lapply(idx, function(i) list(date=rownames(df)[i], y=df[i,1], x=df[i,2])),
+    scatter = lapply(seq_len(nrow(df)), function(i) list(x=df[i,2], y=df[i,1])),
+    timeseries = lapply(seq_len(nrow(df)), function(i) list(date=rownames(df)[i], y=df[i,1], x=df[i,2])),
     coefficients = as.list(coef(model))
   )
   cat("\\n---CHART_DATA_BEGIN---\\n")

@@ -757,6 +757,17 @@ function TurnResults({
           </div>
         </section>
       )}
+      {!hasCoefficients && output.stdout && (
+        <section className="rounded-xl border border-zinc-700 bg-zinc-900/50 overflow-hidden">
+          <div className="px-5 py-3 border-b border-zinc-700">
+            <h2 className="text-sm font-semibold text-amber-400">R Output</h2>
+            <p className="text-xs text-zinc-500 mt-0.5">No coefficient table found — showing raw R output for debugging</p>
+          </div>
+          <div className="p-5">
+            <pre className="text-xs text-zinc-300 whitespace-pre-wrap font-mono overflow-x-auto max-h-64 overflow-y-auto">{output.stdout}</pre>
+          </div>
+        </section>
+      )}
       {hasCoefficients && (
         <section className="rounded-xl border border-zinc-700 bg-zinc-900/50 overflow-hidden">
           <div className="px-5 py-3 border-b border-zinc-700 flex items-center justify-between">
