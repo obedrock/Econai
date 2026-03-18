@@ -2,6 +2,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import { NextResponse } from "next/server";
 import { getLessonsFormattedForPrompt } from "@/lib/claude-lessons";
 
+export const maxDuration = 120;
+
 export type VerifiedVariable = {
   source: "FRED" | "yahoo";
   verified: boolean;

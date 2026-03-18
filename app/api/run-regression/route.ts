@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { addLesson, addAutoFix, sanitizeRCode } from "@/lib/claude-lessons";
 
+export const maxDuration = 120;
+
 const R_API_URL = process.env.R_API_URL || "http://localhost:3001";
 
 const COMPLETE_SCRIPT_PROMPT = `You complete truncated R code. The user will paste R code that was cut off. Return ONLY the complete, runnable R script as plain text. Do not wrap in markdown or code fences. Do not add explanations. The script must end with a closing comment: # END OF SCRIPT. Preserve the existing code and add any missing parts (e.g. closing braces, the CHART_DATA block, tryCatch closure).`;

@@ -681,6 +681,12 @@ export default function Home() {
           </div>
         )}
 
+        {!hasResults && step === "error" && (
+          <div className="flex-1 flex items-center justify-center text-zinc-500 text-sm">
+            Analysis failed — see the error above. Try adjusting your request and running again.
+          </div>
+        )}
+
         {/* Follow-up input at bottom */}
         {hasResults && (
           <div className="shrink-0 border-t border-zinc-800 px-6 py-4 bg-zinc-900/30">
