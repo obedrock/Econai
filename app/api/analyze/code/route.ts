@@ -153,7 +153,8 @@ tryCatch({
 Use TICKER1 and TICKER2 from the verified data. Use NAME1 and NAME2 as the descriptive variable names (same in colnames(df) and lm()). Never use Y, X, FIRST, SECOND.
 
 === OUTPUT FORMAT ===
-Output ONLY the JSON object {"rCode": "<base64-encoded R script>"}. Do NOT add any text, explanation, or code block markers before or after the JSON. The response must start with { and end with } and contain nothing else.`;
+Output ONLY this exact JSON object: {"rCode": "<base64-encoded R script>"}
+Rules: (1) The key rCode MUST be in double quotes. (2) The value MUST be a base64-encoded string in double quotes. (3) No text before or after the JSON. (4) No markdown, no code fences, no explanation. (5) Valid JSON only — property names must be double-quoted strings, never unquoted identifiers.`;
 
 export async function POST(request: Request) {
   try {
@@ -266,8 +267,18 @@ export async function POST(request: Request) {
         { status: 500 }
       );
     }
-    const parsed = JSON.parse(jsonStr) as { rCode?: string };
-    if (typeof parsed.rCode !== "string") {
+    // Try standard JSON.parse first; fall back to regex if Claude used
+    // unquoted key syntax (JS object literal instead of valid JSON).
+    let rCodeRaw: string | undefined;
+    try {
+      const parsed = JSON.parse(jsonStr) as { rCode?: string };
+      rCodeRaw = typeof parsed.rCode === "string" ? parsed.rCode : undefined;
+    } catch {
+      // Claude returned {rCode: "..."} without quoted key — extract with regex
+      const m = text.match(/["\u2018\u2019]?rCode["\u2018\u2019]?\s*:\s*["'`]([A-Za-z0-9+/=\r\n]+)["'`]/);
+      rCodeRaw = m?.[1]?.replace(/[\r\n\s]/g, "");
+    }
+    if (!rCodeRaw) {
       return NextResponse.json(
         { error: "Claude response missing rCode" },
         { status: 500 }
@@ -276,7 +287,7 @@ export async function POST(request: Request) {
 
     let rCode: string;
     try {
-      rCode = Buffer.from(parsed.rCode, "base64").toString("utf-8");
+      rCode = Buffer.from(rCodeRaw, "base64").toString("utf-8");
     } catch {
       return NextResponse.json(
         { error: "Invalid base64 in rCode" },
