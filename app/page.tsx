@@ -379,34 +379,55 @@ export default function Home() {
       setActiveTab("results");
       setProgressMessage("Interpreting results...");
       const rawOutput = [runData.stdout ?? "", runData.stderr ?? ""].filter(Boolean).join("\n--- stderr ---\n");
+      // Strip the large CHART_DATA JSON block — not needed for text interpretation
+      const chartDataMarker = rawOutput.indexOf("\nCHART_DATA:");
+      const cleanOutput = chartDataMarker >= 0 ? rawOutput.slice(0, chartDataMarker) : rawOutput;
       const runInterpretAndEconomic = async () => {
         try {
           let fullInterpretation = "";
-          const [interpretDone, economicRes] = await Promise.all([
-          (async () => {
-            const res = await fetch("/api/interpret-stream", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ output: rawOutput }),
-            });
-            if (!res.ok || !res.body) return;
-            const reader = res.body.getReader();
-            const decoder = new TextDecoder();
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              const chunk = decoder.decode(value, { stream: true });
-              fullInterpretation += chunk;
-              setStreamingInterpretation(fullInterpretation);
-            }
-          })(),
-          fetch("/api/economic-validation", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ output: rawOutput, prompt: text }),
-          }).then((r) => r.json() as Promise<{ economicValidation?: string }>),
-        ]);
-        const economicValidation = economicRes.economicValidation ?? "";
+          let economicValidation = "";
+          await Promise.all([
+            // Interpretation stream — isolated try/catch so it never blocks economic validation
+            (async () => {
+              try {
+                const res = await fetch("/api/interpret-stream", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ output: cleanOutput }),
+                });
+                if (!res.ok || !res.body) return;
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                try {
+                  while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    const chunk = decoder.decode(value, { stream: true });
+                    fullInterpretation += chunk;
+                    setStreamingInterpretation(fullInterpretation);
+                  }
+                } finally {
+                  reader.releaseLock();
+                }
+              } catch (e) {
+                console.error("Interpretation stream error:", e);
+              }
+            })(),
+            // Economic validation — isolated try/catch
+            (async () => {
+              try {
+                const r = await fetch("/api/economic-validation", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ output: cleanOutput, prompt: text }),
+                });
+                const data = (await r.json()) as { economicValidation?: string };
+                economicValidation = data.economicValidation ?? "";
+              } catch (e) {
+                console.error("Economic validation error:", e);
+              }
+            })(),
+          ]);
         setStreamingInterpretation("");
         setConversations((prev) =>
           prev.map((c) => {
@@ -442,6 +463,8 @@ export default function Home() {
         } else {
           fetchHistory();
         }
+      } catch (e) {
+        console.error("runInterpretAndEconomic error:", e);
       } finally {
         setProgressMessage("");
       }
@@ -671,6 +694,9 @@ function TurnResults({
   const { output } = turn;
   const displayInterpretation = isLastTurn && streamingInterpretation ? streamingInterpretation : output.interpretation;
   const parsed = output.stdout ? parseRegressionOutput(output.stdout) : null;
+  // Extract the lm() formula from the R code for model type display
+  const lmMatch = turn.rCode.match(/model\s*<-\s*lm\s*\(([^,)]+(?:\s*\+\s*[^,)]+)*)\s*,\s*data/);
+  const modelFormula = lmMatch ? lmMatch[1].trim() : null;
   const hasCoefficients = parsed && parsed.coefficients.length > 0;
   const cd = output.chartData;
   const scatter = (cd?.scatter ?? []).filter((p) => typeof p.x === "number" && typeof p.y === "number");
@@ -716,8 +742,13 @@ function TurnResults({
       )}
       {hasCoefficients && (
         <section className="rounded-xl border border-zinc-700 bg-zinc-900/50 overflow-hidden">
-          <div className="px-5 py-3 border-b border-zinc-700">
+          <div className="px-5 py-3 border-b border-zinc-700 flex items-center justify-between">
             <h2 className="text-sm font-semibold text-white">Coefficients</h2>
+            {modelFormula && (
+              <span className="text-xs text-zinc-400">
+                OLS · <code className="text-zinc-300 font-mono">{modelFormula}</code>
+              </span>
+            )}
           </div>
           <div className="p-5 overflow-x-auto">
             <table className="w-full text-sm">
@@ -853,6 +884,11 @@ function DataTab({ turn }: { turn: Turn }) {
             <p className="text-white font-medium">Yahoo Finance</p>
           </div>
         </div>
+        {ts.length === 0 && (
+          <p className="text-sm text-zinc-500 mb-4">
+            No timeseries data available. The R script may have encountered an error building the chart data block — check the Code tab for details.
+          </p>
+        )}
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
