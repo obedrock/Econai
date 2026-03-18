@@ -44,6 +44,9 @@ When the user says "crude oil", "oil prices", or "oil" (and does not specify ano
 10. ALWAYS end with the CHART_DATA JSON output wrapped in exactly these delimiters: cat("\\n---CHART_DATA_BEGIN---\\n") then cat(jsonlite::toJSON(...)) then cat("\\n---CHART_DATA_END---\\n"). Never use a bare cat("CHART_DATA:", ...) format.
 11. Always end your R script with a closing comment like # END OF SCRIPT so it is clear the script is complete.
 12. The column names in colnames(df) must EXACTLY match the variable names in lm(). Use the SAME names in colnames() and in lm(). The chart_data block uses df[i,1] and df[i,2] (column indices) — never change these to column names.
+13. *** CRITICAL — NEVER use intersect(index(), index()) for date alignment. intersect() strips the Date class and returns raw integers (e.g. 19724), which when used to subset an xts causes "subscript out of bounds" because 19724 >> nrow(data). ALWAYS use merge() for aligning xts objects — it handles date matching automatically. ***
+14. ALWAYS compute returns with diff(log(Cl(x))) before regressing stock/ETF price series. NEVER regress raw close prices against each other.
+15. NEVER use // for comments in R code. R ONLY supports # for comments. Using // causes an immediate parse error.
 
 === OUTPUT FORMAT ===
 Output ONLY valid JSON: {"rCode": "<base64-encoded R script>"}. Base64-encode the R script.
