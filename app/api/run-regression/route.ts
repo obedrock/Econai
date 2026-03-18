@@ -183,6 +183,43 @@ export async function POST(request: Request) {
     // Convert JS-style // comments to R # comments (Claude sometimes outputs these)
     codeToRun = codeToRun.replace(/^\/\//gm, "#");
     codeToRun = await sanitizeRCode(codeToRun);
+
+    // Server-side FRED data injection.
+    // The R execution server cannot reach fred.stlouisfed.org outbound.
+    // Next.js CAN reach it (verify-data.ts already does), so we download
+    // FRED observations here and replace each getSymbols(..., src="FRED")
+    // call with an inline xts object — no outbound R network call needed.
+    const fredApiKey = process.env.FRED_API_KEY ?? "";
+    if (fredApiKey && codeToRun.includes('src="FRED"')) {
+      const fredPattern = /getSymbols\("([^"]+)",\s*src\s*=\s*"FRED"[^)]*\)/g;
+      const fredMatches = [...codeToRun.matchAll(fredPattern)];
+      for (const match of fredMatches) {
+        const [fullMatch, seriesId] = match;
+        try {
+          const fredUrl =
+            `https://api.stlouisfed.org/fred/series/observations` +
+            `?series_id=${encodeURIComponent(seriesId)}&api_key=${fredApiKey}` +
+            `&file_type=json&observation_start=1990-01-01&sort_order=asc`;
+          const fredRes = await fetch(fredUrl);
+          if (!fredRes.ok) continue;
+          const fredData = (await fredRes.json()) as {
+            observations?: { date: string; value: string }[];
+          };
+          const obs = (fredData.observations ?? []).filter(
+            (o) => o.value !== "." && o.value !== ""
+          );
+          if (obs.length === 0) continue;
+          const dates = obs.map((o) => `"${o.date}"`).join(",");
+          const values = obs.map((o) => o.value).join(",");
+          // Build an inline xts identical in structure to what getSymbols returns
+          const inlineR = `xts::xts(as.numeric(c(${values})), order.by=as.Date(c(${dates})))`;
+          codeToRun = codeToRun.replace(fullMatch, inlineR);
+        } catch {
+          // Leave unchanged — R will fail with a clear error message
+        }
+      }
+    }
+
     if (!codeToRun.includes("# END OF SCRIPT")) {
       const apiKey = process.env.ANTHROPIC_API_KEY;
       if (apiKey) {
