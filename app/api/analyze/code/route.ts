@@ -41,7 +41,7 @@ When the user says "crude oil", "oil prices", or "oil" (and does not specify ano
 7. ALWAYS wrap the script in tryCatch().
 8. ALWAYS install packages with suppressMessages(suppressWarnings()).
 9. ALWAYS set options(HTTPUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36") immediately after loading libraries and BEFORE any getSymbols() call. This prevents Yahoo Finance from blocking downloads in server environments.
-10. ALWAYS end with the CHART_DATA JSON output wrapped in exactly these delimiters: cat("\\n---CHART_DATA_BEGIN---\\n") then cat(jsonlite::toJSON(...)) then cat("\\n---CHART_DATA_END---\\n"). Never use a bare cat("CHART_DATA:", ...) format.
+10. ALWAYS end with the CHART_DATA JSON output wrapped in exactly these delimiters: cat("\\n---CHART_DATA_BEGIN---\\n") then cat(jsonlite::toJSON(...)) then cat("\\n---CHART_DATA_END---\\n"). Never use a bare cat("CHART_DATA:", ...) format. IMPORTANT: to keep the JSON small, sample data to at most 500 rows before building chart_data: add idx <- if (nrow(df) > 500) round(seq(1, nrow(df), length.out=500)) else seq_len(nrow(df)) immediately before building chart_data, then use idx when building scatter and timeseries lists.
 11. Always end your R script with a closing comment like # END OF SCRIPT so it is clear the script is complete.
 12. The column names in colnames(df) must EXACTLY match the variable names in lm(). Use the SAME names in colnames() and in lm(). The chart_data block uses df[i,1] and df[i,2] (column indices) — never change these to column names.
 
@@ -79,9 +79,10 @@ tryCatch({
   # Step 6: regression using those exact column names
   model <- lm(NAME1 ~ NAME2, data=df)
   print(summary(model))
+  idx <- if (nrow(df) > 500) round(seq(1, nrow(df), length.out=500)) else seq_len(nrow(df))
   chart_data <- list(
-    scatter = lapply(seq_len(nrow(df)), function(i) list(x=df[i,2], y=df[i,1])),
-    timeseries = lapply(seq_len(nrow(df)), function(i) list(date=rownames(df)[i], y=df[i,1], x=df[i,2])),
+    scatter = lapply(idx, function(i) list(x=df[i,2], y=df[i,1])),
+    timeseries = lapply(idx, function(i) list(date=rownames(df)[i], y=df[i,1], x=df[i,2])),
     coefficients = as.list(coef(model))
   )
   cat("\\n---CHART_DATA_BEGIN---\\n")
@@ -140,7 +141,7 @@ export async function POST(request: Request) {
 
     const client = new Anthropic({ apiKey });
     const response = await client.messages.create({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-sonnet-4-6",
       max_tokens: 4096,
       system: systemPrompt,
       messages: [{ role: "user", content: userPrompt }],

@@ -50,7 +50,8 @@ Always end with exactly one of these lines:
 Reply with only your validation text, no extra heading.`;
 
 const MAX_ATTEMPTS = 2;
-const FIX_MODEL = "claude-3-5-haiku-20241022";
+// Use current model IDs (claude-3-5-haiku-20241022 is deprecated as of 2026)
+const HAIKU_MODEL = "claude-haiku-4-5-20251001";
 
 /** Strip non-ASCII / corrupted chars so Windows encoding doesn't break the response. */
 function sanitizeEncoding(s: string): string {
@@ -115,7 +116,7 @@ async function askClaudeToFixCode(
 ): Promise<string> {
   const client = new Anthropic({ apiKey });
   const msg = await client.messages.create({
-    model: FIX_MODEL,
+    model: HAIKU_MODEL,
     max_tokens: 4096,
     system: FIX_CODE_PROMPT,
     messages: [
@@ -138,7 +139,7 @@ async function generateOneLesson(
 ): Promise<{ error: string; cause: string; fix: string } | null> {
   const client = new Anthropic({ apiKey });
   const msg = await client.messages.create({
-    model: "claude-3-5-haiku-20241022",
+    model: HAIKU_MODEL,
     max_tokens: 256,
     system: ONE_LESSON_PROMPT,
     messages: [{ role: "user", content: "R error that was fixed:\n" + errorOutput }],
@@ -165,7 +166,7 @@ async function generateOneAutoFix(
 ): Promise<{ description: string; pattern: string; replacement: string } | null> {
   const client = new Anthropic({ apiKey });
   const msg = await client.messages.create({
-    model: FIX_MODEL,
+    model: HAIKU_MODEL,
     max_tokens: 256,
     system: ONE_AUTOFIX_PROMPT,
     messages: [
@@ -214,7 +215,7 @@ export async function POST(request: Request) {
         try {
           const client = new Anthropic({ apiKey });
           const msg = await client.messages.create({
-            model: "claude-sonnet-4-20250514",
+            model: "claude-sonnet-4-6",
             max_tokens: 4096,
             system: COMPLETE_SCRIPT_PROMPT,
             messages: [{ role: "user", content: "Your R code was cut off, please complete it:\n\n" + codeToRun }],
@@ -276,6 +277,7 @@ export async function POST(request: Request) {
         stderr: result.stderr,
         exitCode: result.exitCode,
         interpretation: "",
+        economicValidation: "",
         chartData: null,
         error: result.stderr || result.stdout || "R script failed",
         dataUnavailable: !isErrorFixable(runError),
@@ -283,6 +285,7 @@ export async function POST(request: Request) {
       });
     }
 
+    // Extract chart data from R output
     let chartData: Record<string, unknown> | null = null;
     const BEGIN = "---CHART_DATA_BEGIN---";
     const END = "---CHART_DATA_END---";
@@ -312,13 +315,62 @@ export async function POST(request: Request) {
       }
     }
 
+    // Strip CHART_DATA block from output before sending to AI (saves tokens)
+    let cleanOutput = result.stdout;
+    if (beginIdx >= 0 && endIdx > beginIdx) {
+      cleanOutput = cleanOutput.slice(0, beginIdx) + cleanOutput.slice(endIdx + END.length);
+    } else if (cleanOutput.indexOf("\nCHART_DATA:") >= 0) {
+      cleanOutput = cleanOutput.slice(0, cleanOutput.indexOf("\nCHART_DATA:"));
+    }
+    cleanOutput = cleanOutput.trim();
+
+    // Generate interpretation and economic validation in parallel (same call so API key is
+    // guaranteed available — avoids separate route timeout/env issues on Vercel)
+    let interpretation = "";
+    let economicValidation = "";
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (apiKey && cleanOutput) {
+      try {
+        const client = new Anthropic({ apiKey });
+        const [interpResult, econResult] = await Promise.allSettled([
+          client.messages.create({
+            model: HAIKU_MODEL,
+            max_tokens: 512,
+            system: INTERPRETATION_PROMPT,
+            messages: [{ role: "user", content: cleanOutput }],
+          }),
+          client.messages.create({
+            model: HAIKU_MODEL,
+            max_tokens: 384,
+            system: ECONOMIC_VALIDATION_PROMPT,
+            messages: [
+              {
+                role: "user",
+                content: `User's regression request: ${prompt ?? ""}\n\nRegression output:\n${cleanOutput}`,
+              },
+            ],
+          }),
+        ]);
+        if (interpResult.status === "fulfilled") {
+          const tb = interpResult.value.content.find((b) => b.type === "text");
+          if (tb && "text" in tb) interpretation = (tb as { text: string }).text.trim();
+        }
+        if (econResult.status === "fulfilled") {
+          const tb = econResult.value.content.find((b) => b.type === "text");
+          if (tb && "text" in tb) economicValidation = (tb as { text: string }).text.trim();
+        }
+      } catch (e) {
+        console.error("Interpretation/validation error:", e);
+      }
+    }
+
     return NextResponse.json({
       stdout: result.stdout,
       stderr: result.stderr,
       exitCode: result.exitCode,
       success: true,
-      interpretation: "",
-      economicValidation: "",
+      interpretation,
+      economicValidation,
       chartData,
       attempts: previousCorrections.length + 1,
       corrected: previousCorrections.length > 0,

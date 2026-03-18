@@ -350,8 +350,8 @@ export default function Home() {
           stdout: runData.stdout ?? "",
           stderr: runData.stderr ?? "",
           success: runData.success ?? false,
-          interpretation: "",
-          economicValidation: "",
+          interpretation: runData.interpretation ?? "",
+          economicValidation: runData.economicValidation ?? "",
           chartData: (runData.chartData as ChartData) ?? null,
         },
       };
@@ -379,106 +379,34 @@ export default function Home() {
       }
       setStep("done");
       setActiveTab("results");
-      setProgressMessage("Interpreting results...");
-      const rawOutput = [runData.stdout ?? "", runData.stderr ?? ""].filter(Boolean).join("\n--- stderr ---\n");
-      // Strip the large CHART_DATA JSON block — not needed for text interpretation
-      const chartDataMarker = rawOutput.indexOf("\n---CHART_DATA_BEGIN---");
-      const chartDataEnd = rawOutput.indexOf("---CHART_DATA_END---");
-      const cleanOutput = chartDataMarker >= 0 && chartDataEnd > chartDataMarker
-        ? rawOutput.slice(0, chartDataMarker) + rawOutput.slice(chartDataEnd + "---CHART_DATA_END---".length)
-        : rawOutput.indexOf("\nCHART_DATA:") >= 0
-          ? rawOutput.slice(0, rawOutput.indexOf("\nCHART_DATA:"))
-          : rawOutput;
-      const runInterpretAndEconomic = async () => {
+      setProgressMessage("");
+      // Interpretation and economic validation are now returned directly from
+      // run-regression (done server-side in one call), so no separate API calls needed.
+      // Fire-and-forget: save to DB and refresh sidebar history.
+      (async () => {
         try {
-          let fullInterpretation = "";
-          let economicValidation = "";
-          await Promise.all([
-            // Interpretation stream — isolated try/catch so it never blocks economic validation
-            (async () => {
-              try {
-                const res = await fetch("/api/interpret-stream", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ output: cleanOutput }),
-                });
-                if (!res.ok || !res.body) return;
-                const reader = res.body.getReader();
-                const decoder = new TextDecoder();
-                try {
-                  while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    const chunk = decoder.decode(value, { stream: true });
-                    fullInterpretation += chunk;
-                    setStreamingInterpretation(fullInterpretation);
-                  }
-                } finally {
-                  reader.releaseLock();
-                }
-              } catch (e) {
-                console.error("Interpretation stream error:", e);
-              }
-            })(),
-            // Economic validation — isolated try/catch
-            (async () => {
-              try {
-                const r = await fetch("/api/economic-validation", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ output: cleanOutput, prompt: text }),
-                });
-                const data = (await r.json()) as { economicValidation?: string };
-                economicValidation = data.economicValidation ?? "";
-              } catch (e) {
-                console.error("Economic validation error:", e);
-              }
-            })(),
-          ]);
-        setStreamingInterpretation("");
-        setConversations((prev) =>
-          prev.map((c) => {
-            const lastIdx = c.turns.length - 1;
-            if (lastIdx < 0) return c;
-            const last = c.turns[lastIdx];
-            if (last.prompt !== text) return c;
-            return {
-              ...c,
-              turns: c.turns.map((t, i) =>
-                i === lastIdx
-                  ? { ...t, output: { ...t.output, interpretation: fullInterpretation, economicValidation } }
-                  : t
-              ),
-            };
-          })
-        );
-        await fetch("/api/save-regression", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            prompt: text,
-            r_code: currentCode,
-            output: JSON.stringify({ stdout: runData.stdout, stderr: runData.stderr }),
-            interpretation: fullInterpretation,
-            economic_validation: economicValidation ?? null,
-            chart_data: runData.chartData ? JSON.stringify(runData.chartData) : null,
-          }),
-        });
+          await fetch("/api/save-regression", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              prompt: text,
+              r_code: currentCode,
+              output: JSON.stringify({ stdout: runData.stdout, stderr: runData.stderr }),
+              interpretation: runData.interpretation ?? "",
+              economic_validation: runData.economicValidation ?? null,
+              chart_data: runData.chartData ? JSON.stringify(runData.chartData) : null,
+            }),
+          });
+        } catch {
+          // save failure is non-fatal
+        }
         if (!isFollowUp) {
           const list = await fetchHistory(true);
-          // Only switch to the DB id if we actually got one back;
-          // if DB is unavailable, keep pointing at the local conversation.
           if (list[0]?.id) setCurrentConversationId(list[0].id);
         } else {
           fetchHistory();
         }
-      } catch (e) {
-        console.error("runInterpretAndEconomic error:", e);
-      } finally {
-        setProgressMessage("");
-      }
-      };
-      runInterpretAndEconomic();
+      })();
       if (runData.corrected) {
         fetch("/api/lessons")
           .then((r) => (r.ok ? r.json() : { count: 0, autoFixes: 0 }))
