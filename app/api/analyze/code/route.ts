@@ -104,9 +104,6 @@ tryCatch({
 }, error = function(e) { cat("ERROR:", conditionMessage(e), "\\n") })
 # END OF SCRIPT
 
-=== OUTPUT FORMAT ===
-Output ONLY valid JSON: {"rCode": "<base64-encoded R script>"}. Base64-encode the R script.
-
 === R TEMPLATE — Yahoo-only (use when ALL variables are Yahoo Finance) ===
 
 tryCatch({
@@ -149,7 +146,10 @@ tryCatch({
 }, error = function(e) { cat("ERROR:", conditionMessage(e), "\\n") })
 # END OF SCRIPT
 
-Use TICKER1 and TICKER2 from the verified data. Use NAME1 and NAME2 as the descriptive variable names (same in colnames(df) and lm()). Never use Y, X, FIRST, SECOND.`;
+Use TICKER1 and TICKER2 from the verified data. Use NAME1 and NAME2 as the descriptive variable names (same in colnames(df) and lm()). Never use Y, X, FIRST, SECOND.
+
+=== OUTPUT FORMAT ===
+Output ONLY the JSON object {"rCode": "<base64-encoded R script>"}. Do NOT add any text, explanation, or code block markers before or after the JSON. The response must start with { and end with } and contain nothing else.`;
 
 export async function POST(request: Request) {
   try {
@@ -243,15 +243,26 @@ export async function POST(request: Request) {
       );
     }
 
-    const first = text.indexOf("{");
-    const last = text.lastIndexOf("}");
-    if (first === -1 || last === -1 || last < first) {
+    // Extract the first complete JSON object using bracket-depth matching.
+    // lastIndexOf("}") would find trailing braces from any text Claude appends
+    // after the JSON (e.g. from R code examples), producing invalid slices.
+    const jsonStr = (() => {
+      const start = text.indexOf("{");
+      if (start === -1) return null;
+      let depth = 0;
+      for (let i = start; i < text.length; i++) {
+        if (text[i] === "{") depth++;
+        else if (text[i] === "}") { depth--; if (depth === 0) return text.slice(start, i + 1); }
+      }
+      return null;
+    })();
+    if (!jsonStr) {
       return NextResponse.json(
         { error: "No JSON object found in Claude response" },
         { status: 500 }
       );
     }
-    const parsed = JSON.parse(text.slice(first, last + 1)) as { rCode?: string };
+    const parsed = JSON.parse(jsonStr) as { rCode?: string };
     if (typeof parsed.rCode !== "string") {
       return NextResponse.json(
         { error: "Claude response missing rCode" },
@@ -282,16 +293,24 @@ export async function POST(request: Request) {
       });
       const retryBlock = retryResponse.content.find((b) => b.type === "text");
       const retryText = (retryBlock && "text" in retryBlock ? (retryBlock as { text: string }).text : "").trim();
-      const rf = retryText.indexOf("{");
-      const rl = retryText.lastIndexOf("}");
-      if (rf !== -1 && rl > rf) {
+      const retryJsonStr = (() => {
+        const start = retryText.indexOf("{");
+        if (start === -1) return null;
+        let depth = 0;
+        for (let i = start; i < retryText.length; i++) {
+          if (retryText[i] === "{") depth++;
+          else if (retryText[i] === "}") { depth--; if (depth === 0) return retryText.slice(start, i + 1); }
+        }
+        return null;
+      })();
+      if (retryJsonStr) {
         try {
-          const retryParsed = JSON.parse(retryText.slice(rf, rl + 1)) as { rCode?: string };
+          const retryParsed = JSON.parse(retryJsonStr) as { rCode?: string };
           if (typeof retryParsed.rCode === "string") {
             const retryDecoded = Buffer.from(retryParsed.rCode, "base64").toString("utf-8");
             if (retryDecoded.includes("lm(")) rCode = retryDecoded;
           }
-        } catch { /* keep original */ }
+        } catch { /* keep original rCode */ }
       }
     }
 
