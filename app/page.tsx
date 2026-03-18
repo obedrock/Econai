@@ -200,7 +200,9 @@ export default function Home() {
       const rows = (await res.json()) as HistoryRow[];
       const fromApi = rows.map(historyRowToConversation);
       setConversations((prev) => {
-        if (replaceAll) return fromApi;
+        // Only replace all when DB actually returned records; if DB is unavailable
+      // (empty array) keep local conversations so results don't disappear.
+      if (replaceAll && fromApi.length > 0) return fromApi;
         const local = prev.filter((c) => c.id.startsWith("local-"));
         const apiIds = new Set(fromApi.map((c) => c.id));
         const localOnly = local.filter((c) => !apiIds.has(c.id));
@@ -464,7 +466,9 @@ export default function Home() {
         });
         if (!isFollowUp) {
           const list = await fetchHistory(true);
-          setCurrentConversationId(list[0]?.id ?? null);
+          // Only switch to the DB id if we actually got one back;
+          // if DB is unavailable, keep pointing at the local conversation.
+          if (list[0]?.id) setCurrentConversationId(list[0].id);
         } else {
           fetchHistory();
         }
