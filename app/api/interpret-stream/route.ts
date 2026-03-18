@@ -23,33 +23,23 @@ export async function POST(request: Request) {
       return new Response("", { status: 200 });
     }
     const client = new Anthropic({ apiKey });
-    const stream = client.messages.stream({
+    // Non-streaming call — more reliable on serverless (Vercel).
+    // The frontend reader loop still works: it gets the full text in one chunk.
+    const msg = await client.messages.create({
       model: MODEL,
       max_tokens: 512,
       system: INTERPRETATION_PROMPT,
       messages: [{ role: "user", content: output }],
     });
-    const readable = new ReadableStream({
-      async start(controller) {
-        try {
-          stream.on("text", (textDelta: string) => {
-            controller.enqueue(new TextEncoder().encode(textDelta));
-          });
-          await stream.finalMessage();
-        } catch (e) {
-          controller.error(e);
-        } finally {
-          controller.close();
-        }
-      },
-    });
-    return new Response(readable, {
+    const textBlock = msg.content.find((b) => b.type === "text");
+    const text = (textBlock && "text" in textBlock ? (textBlock as { text: string }).text : "").trim();
+    return new Response(text, {
       headers: { "Content-Type": "text/plain; charset=utf-8" },
     });
   } catch (err) {
-    console.error("Interpret stream error:", err);
+    console.error("Interpret error:", err);
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Stream failed" },
+      { error: err instanceof Error ? err.message : "Interpretation failed" },
       { status: 500 }
     );
   }
