@@ -379,12 +379,85 @@ export default function Home() {
       }
       setStep("done");
       setActiveTab("results");
-      setProgressMessage("");
-      // Interpretation and economic validation are now returned directly from
-      // run-regression (done server-side in one call), so no separate API calls needed.
-      // Fire-and-forget: save to DB and refresh sidebar history.
+      setProgressMessage("Interpreting results...");
+
+      // Strip the large CHART_DATA JSON block — not needed for text interpretation
+      const rawOutput = [runData.stdout ?? "", runData.stderr ?? ""].filter(Boolean).join("\n--- stderr ---\n");
+      const chartDataMarker = rawOutput.indexOf("\n---CHART_DATA_BEGIN---");
+      const chartDataEnd = rawOutput.indexOf("---CHART_DATA_END---");
+      const cleanOutput = chartDataMarker >= 0 && chartDataEnd > chartDataMarker
+        ? rawOutput.slice(0, chartDataMarker) + rawOutput.slice(chartDataEnd + "---CHART_DATA_END---".length)
+        : rawOutput.indexOf("\nCHART_DATA:") >= 0
+          ? rawOutput.slice(0, rawOutput.indexOf("\nCHART_DATA:"))
+          : rawOutput;
+
+      // Fire-and-forget: run interpretation + economic validation + save + history refresh
       (async () => {
         try {
+          let fullInterpretation = "";
+          let economicValidation = "";
+
+          await Promise.all([
+            // Interpretation stream
+            (async () => {
+              try {
+                const res = await fetch("/api/interpret-stream", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ output: cleanOutput }),
+                });
+                if (!res.ok || !res.body) return;
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                try {
+                  while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    const chunk = decoder.decode(value, { stream: true });
+                    fullInterpretation += chunk;
+                    setStreamingInterpretation(fullInterpretation);
+                  }
+                } finally {
+                  reader.releaseLock();
+                }
+              } catch (e) {
+                console.error("Interpretation error:", e);
+              }
+            })(),
+            // Economic validation
+            (async () => {
+              try {
+                const r = await fetch("/api/economic-validation", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ output: cleanOutput, prompt: text }),
+                });
+                const data = (await r.json()) as { economicValidation?: string };
+                economicValidation = data.economicValidation ?? "";
+              } catch (e) {
+                console.error("Economic validation error:", e);
+              }
+            })(),
+          ]);
+
+          setStreamingInterpretation("");
+          setConversations((prev) =>
+            prev.map((c) => {
+              const lastIdx = c.turns.length - 1;
+              if (lastIdx < 0) return c;
+              const last = c.turns[lastIdx];
+              if (last.prompt !== text) return c;
+              return {
+                ...c,
+                turns: c.turns.map((t, i) =>
+                  i === lastIdx
+                    ? { ...t, output: { ...t.output, interpretation: fullInterpretation, economicValidation } }
+                    : t
+                ),
+              };
+            })
+          );
+
           await fetch("/api/save-regression", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -392,13 +465,15 @@ export default function Home() {
               prompt: text,
               r_code: currentCode,
               output: JSON.stringify({ stdout: runData.stdout, stderr: runData.stderr }),
-              interpretation: runData.interpretation ?? "",
-              economic_validation: runData.economicValidation ?? null,
+              interpretation: fullInterpretation,
+              economic_validation: economicValidation || null,
               chart_data: runData.chartData ? JSON.stringify(runData.chartData) : null,
             }),
           });
-        } catch {
-          // save failure is non-fatal
+        } catch (e) {
+          console.error("Post-run error:", e);
+        } finally {
+          setProgressMessage("");
         }
         if (!isFollowUp) {
           const list = await fetchHistory(true);

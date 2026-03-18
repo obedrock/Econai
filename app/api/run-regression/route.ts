@@ -22,36 +22,8 @@ REPLACEMENT: <exact string to replace it with>
 
 Pattern and replacement must be literal text that would appear in R source. Escape quotes if needed. No other text.`;
 
-const INTERPRETATION_PROMPT = `You are a senior analyst explaining regression output to a client. Given raw R output below, write a plain-English interpretation that:
-1. Is 3-5 sentences, written like a senior analyst to a client.
-2. Highlights the most important findings (key coefficients, significance, R-squared).
-3. Flags any concerns (low R-squared, insignificant variables, etc.).
-4. Ends with one practical "so what" takeaway.
-
-Reply with only the interpretation text, no heading or markdown.`;
-
-const ECONOMIC_VALIDATION_PROMPT = `You are an expert economist. Review these regression results and check if the coefficient signs and magnitudes make economic sense.
-
-Consider:
-- Supply/demand relationships
-- Cost relationships (inputs vs company profits)
-- Macro relationships (Okun's law, Fisher effect, purchasing power parity, etc.)
-- Finance relationships (CAPM, factor models, yield curves)
-
-If anything looks economically wrong or surprising, flag it with a warning.
-If the results make sense, confirm they are economically reasonable.
-If results are surprising but could be correct, explain why they might make sense in the current economic environment.
-
-Always end with exactly one of these lines:
-✅ Economically reasonable
-⚠️ Unexpected - possible data or model issue
-🔍 Surprising but explainable - here's why this might make sense
-
-Reply with only your validation text, no extra heading.`;
-
 const MAX_ATTEMPTS = 2;
-// Use current model IDs (claude-3-5-haiku-20241022 is deprecated as of 2026)
-const HAIKU_MODEL = "claude-haiku-4-5-20251001";
+const FIX_MODEL = "claude-haiku-4-5-20251001";
 
 /** Strip non-ASCII / corrupted chars so Windows encoding doesn't break the response. */
 function sanitizeEncoding(s: string): string {
@@ -116,7 +88,7 @@ async function askClaudeToFixCode(
 ): Promise<string> {
   const client = new Anthropic({ apiKey });
   const msg = await client.messages.create({
-    model: HAIKU_MODEL,
+    model: FIX_MODEL,
     max_tokens: 4096,
     system: FIX_CODE_PROMPT,
     messages: [
@@ -139,7 +111,7 @@ async function generateOneLesson(
 ): Promise<{ error: string; cause: string; fix: string } | null> {
   const client = new Anthropic({ apiKey });
   const msg = await client.messages.create({
-    model: HAIKU_MODEL,
+    model: FIX_MODEL,
     max_tokens: 256,
     system: ONE_LESSON_PROMPT,
     messages: [{ role: "user", content: "R error that was fixed:\n" + errorOutput }],
@@ -166,7 +138,7 @@ async function generateOneAutoFix(
 ): Promise<{ description: string; pattern: string; replacement: string } | null> {
   const client = new Anthropic({ apiKey });
   const msg = await client.messages.create({
-    model: HAIKU_MODEL,
+    model: FIX_MODEL,
     max_tokens: 256,
     system: ONE_AUTOFIX_PROMPT,
     messages: [
@@ -199,7 +171,7 @@ export async function POST(request: Request) {
       attempt?: number;
       previousCorrections?: { error: string }[];
     };
-    const { code, prompt, attempt = 1, previousCorrections = [] } = body;
+    const { code, attempt = 1, previousCorrections = [] } = body;
     if (!code || typeof code !== "string") {
       return NextResponse.json(
         { error: "Missing or invalid code" },
@@ -285,7 +257,6 @@ export async function POST(request: Request) {
       });
     }
 
-    // Extract chart data from R output
     let chartData: Record<string, unknown> | null = null;
     const BEGIN = "---CHART_DATA_BEGIN---";
     const END = "---CHART_DATA_END---";
@@ -315,62 +286,13 @@ export async function POST(request: Request) {
       }
     }
 
-    // Strip CHART_DATA block from output before sending to AI (saves tokens)
-    let cleanOutput = result.stdout;
-    if (beginIdx >= 0 && endIdx > beginIdx) {
-      cleanOutput = cleanOutput.slice(0, beginIdx) + cleanOutput.slice(endIdx + END.length);
-    } else if (cleanOutput.indexOf("\nCHART_DATA:") >= 0) {
-      cleanOutput = cleanOutput.slice(0, cleanOutput.indexOf("\nCHART_DATA:"));
-    }
-    cleanOutput = cleanOutput.trim();
-
-    // Generate interpretation and economic validation in parallel (same call so API key is
-    // guaranteed available — avoids separate route timeout/env issues on Vercel)
-    let interpretation = "";
-    let economicValidation = "";
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (apiKey && cleanOutput) {
-      try {
-        const client = new Anthropic({ apiKey });
-        const [interpResult, econResult] = await Promise.allSettled([
-          client.messages.create({
-            model: HAIKU_MODEL,
-            max_tokens: 512,
-            system: INTERPRETATION_PROMPT,
-            messages: [{ role: "user", content: cleanOutput }],
-          }),
-          client.messages.create({
-            model: HAIKU_MODEL,
-            max_tokens: 384,
-            system: ECONOMIC_VALIDATION_PROMPT,
-            messages: [
-              {
-                role: "user",
-                content: `User's regression request: ${prompt ?? ""}\n\nRegression output:\n${cleanOutput}`,
-              },
-            ],
-          }),
-        ]);
-        if (interpResult.status === "fulfilled") {
-          const tb = interpResult.value.content.find((b) => b.type === "text");
-          if (tb && "text" in tb) interpretation = (tb as { text: string }).text.trim();
-        }
-        if (econResult.status === "fulfilled") {
-          const tb = econResult.value.content.find((b) => b.type === "text");
-          if (tb && "text" in tb) economicValidation = (tb as { text: string }).text.trim();
-        }
-      } catch (e) {
-        console.error("Interpretation/validation error:", e);
-      }
-    }
-
     return NextResponse.json({
       stdout: result.stdout,
       stderr: result.stderr,
       exitCode: result.exitCode,
       success: true,
-      interpretation,
-      economicValidation,
+      interpretation: "",
+      economicValidation: "",
       chartData,
       attempts: previousCorrections.length + 1,
       corrected: previousCorrections.length > 0,
