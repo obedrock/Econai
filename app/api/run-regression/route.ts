@@ -284,16 +284,30 @@ export async function POST(request: Request) {
     }
 
     let chartData: Record<string, unknown> | null = null;
-    const chartIdx = result.stdout.indexOf("CHART_DATA:");
-    if (chartIdx >= 0) {
-      const after = result.stdout.slice(chartIdx + "CHART_DATA:".length);
-      const first = after.indexOf("{");
-      const last = after.lastIndexOf("}");
-      if (first !== -1 && last >= first) {
-        try {
-          chartData = JSON.parse(after.slice(first, last + 1)) as Record<string, unknown>;
-        } catch {
-          // leave chartData null
+    const BEGIN = "---CHART_DATA_BEGIN---";
+    const END = "---CHART_DATA_END---";
+    const beginIdx = result.stdout.indexOf(BEGIN);
+    const endIdx = result.stdout.indexOf(END);
+    if (beginIdx >= 0 && endIdx > beginIdx) {
+      const jsonStr = result.stdout.slice(beginIdx + BEGIN.length, endIdx).trim();
+      try {
+        chartData = JSON.parse(jsonStr) as Record<string, unknown>;
+      } catch {
+        // leave chartData null
+      }
+    } else {
+      // Fallback: legacy CHART_DATA: format
+      const chartIdx = result.stdout.indexOf("CHART_DATA:");
+      if (chartIdx >= 0) {
+        const after = result.stdout.slice(chartIdx + "CHART_DATA:".length);
+        const first = after.indexOf("{");
+        const last = after.lastIndexOf("}");
+        if (first !== -1 && last >= first) {
+          try {
+            chartData = JSON.parse(after.slice(first, last + 1)) as Record<string, unknown>;
+          } catch {
+            // leave chartData null
+          }
         }
       }
     }

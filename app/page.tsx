@@ -380,8 +380,13 @@ export default function Home() {
       setProgressMessage("Interpreting results...");
       const rawOutput = [runData.stdout ?? "", runData.stderr ?? ""].filter(Boolean).join("\n--- stderr ---\n");
       // Strip the large CHART_DATA JSON block — not needed for text interpretation
-      const chartDataMarker = rawOutput.indexOf("\nCHART_DATA:");
-      const cleanOutput = chartDataMarker >= 0 ? rawOutput.slice(0, chartDataMarker) : rawOutput;
+      const chartDataMarker = rawOutput.indexOf("\n---CHART_DATA_BEGIN---");
+      const chartDataEnd = rawOutput.indexOf("---CHART_DATA_END---");
+      const cleanOutput = chartDataMarker >= 0 && chartDataEnd > chartDataMarker
+        ? rawOutput.slice(0, chartDataMarker) + rawOutput.slice(chartDataEnd + "---CHART_DATA_END---".length)
+        : rawOutput.indexOf("\nCHART_DATA:") >= 0
+          ? rawOutput.slice(0, rawOutput.indexOf("\nCHART_DATA:"))
+          : rawOutput;
       const runInterpretAndEconomic = async () => {
         try {
           let fullInterpretation = "";

@@ -41,7 +41,7 @@ When the user says "crude oil", "oil prices", or "oil" (and does not specify ano
 7. ALWAYS wrap the script in tryCatch().
 8. ALWAYS install packages with suppressMessages(suppressWarnings()).
 9. ALWAYS set options(HTTPUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36") immediately after loading libraries and BEFORE any getSymbols() call. This prevents Yahoo Finance from blocking downloads in server environments.
-10. ALWAYS end with the CHART_DATA JSON output.
+10. ALWAYS end with the CHART_DATA JSON output wrapped in exactly these delimiters: cat("\\n---CHART_DATA_BEGIN---\\n") then cat(jsonlite::toJSON(...)) then cat("\\n---CHART_DATA_END---\\n"). Never use a bare cat("CHART_DATA:", ...) format.
 11. Always end your R script with a closing comment like # END OF SCRIPT so it is clear the script is complete.
 12. The column names in colnames(df) must EXACTLY match the variable names in lm(). Use the SAME names in colnames() and in lm(). The chart_data block uses df[i,1] and df[i,2] (column indices) — never change these to column names.
 
@@ -84,7 +84,9 @@ tryCatch({
     timeseries = lapply(seq_len(nrow(df)), function(i) list(date=rownames(df)[i], y=df[i,1], x=df[i,2])),
     coefficients = as.list(coef(model))
   )
-  cat("\\nCHART_DATA:", jsonlite::toJSON(chart_data, auto_unbox=TRUE), "\\n")
+  cat("\\n---CHART_DATA_BEGIN---\\n")
+  cat(jsonlite::toJSON(chart_data, auto_unbox=TRUE))
+  cat("\\n---CHART_DATA_END---\\n")
 }, error = function(e) { cat("ERROR:", conditionMessage(e), "\\n") })
 # END OF SCRIPT
 
