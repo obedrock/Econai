@@ -18,6 +18,11 @@ Always end with exactly one of these lines:
 ⚠️ Unexpected - possible data or model issue
 🔍 Surprising but explainable - here's why this might make sense
 
+If you end with ⚠️ Unexpected - possible data or model issue, append one additional line in this exact format:
+SUGGESTED_FIX: <a short imperative follow-up the user should send to fix the issue>
+Example: SUGGESTED_FIX: Re-run using month-over-month changes for all macro variables instead of levels
+Do NOT add a SUGGESTED_FIX line for ✅ or 🔍 results.
+
 Reply with only your validation text, no extra heading.`;
 
 const MODEL = "claude-haiku-4-5-20251001";
@@ -32,20 +37,26 @@ export async function POST(request: Request) {
     const output = body.output ?? "";
     const prompt = body.prompt ?? "";
     if (!output.trim()) {
-      return NextResponse.json({ economicValidation: "" });
+      return NextResponse.json({ economicValidation: "", suggestedFix: "" });
     }
     const client = new Anthropic({ apiKey });
     const msg = await client.messages.create({
       model: MODEL,
-      max_tokens: 384,
+      max_tokens: 512,
       system: ECONOMIC_VALIDATION_PROMPT,
       messages: [
         { role: "user", content: `User's regression request: ${prompt}\n\nRegression output:\n${output}` },
       ],
     });
     const textBlock = msg.content.find((b) => b.type === "text");
-    const economicValidation = (textBlock && "text" in textBlock ? (textBlock as { text: string }).text : "").trim();
-    return NextResponse.json({ economicValidation });
+    const raw = (textBlock && "text" in textBlock ? (textBlock as { text: string }).text : "").trim();
+
+    // Parse out the SUGGESTED_FIX line (only present for ⚠️ results)
+    const fixMatch = raw.match(/\nSUGGESTED_FIX:\s*(.+)$/);
+    const suggestedFix = fixMatch ? fixMatch[1].trim() : "";
+    const economicValidation = fixMatch ? raw.slice(0, fixMatch.index).trim() : raw;
+
+    return NextResponse.json({ economicValidation, suggestedFix });
   } catch (err) {
     console.error("Economic validation error:", err);
     return NextResponse.json(

@@ -31,6 +31,7 @@ type TurnOutput = {
   success: boolean;
   interpretation: string;
   economicValidation: string;
+  suggestedFix: string;
   chartData: ChartData | null;
 };
 
@@ -150,6 +151,7 @@ function historyRowToConversation(row: HistoryRow): Conversation {
           success: true,
           interpretation: row.interpretation,
           economicValidation: row.economic_validation ?? "",
+          suggestedFix: "",
           chartData,
         },
       },
@@ -352,6 +354,7 @@ export default function Home() {
           success: runData.success ?? false,
           interpretation: runData.interpretation ?? "",
           economicValidation: runData.economicValidation ?? "",
+          suggestedFix: "",
           chartData: (runData.chartData as ChartData) ?? null,
         },
       };
@@ -401,6 +404,7 @@ export default function Home() {
         try {
           let fullInterpretation = "";
           let economicValidation = "";
+          let suggestedFix = "";
 
           await Promise.all([
             // Interpretation stream
@@ -437,8 +441,9 @@ export default function Home() {
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({ output: cleanOutput, prompt: text }),
                 });
-                const data = (await r.json()) as { economicValidation?: string };
+                const data = (await r.json()) as { economicValidation?: string; suggestedFix?: string };
                 economicValidation = data.economicValidation ?? "";
+                suggestedFix = data.suggestedFix ?? "";
               } catch (e) {
                 console.error("Economic validation error:", e);
               }
@@ -456,7 +461,7 @@ export default function Home() {
                 ...c,
                 turns: c.turns.map((t, i) =>
                   i === lastIdx
-                    ? { ...t, output: { ...t.output, interpretation: fullInterpretation, economicValidation } }
+                    ? { ...t, output: { ...t.output, interpretation: fullInterpretation, economicValidation, suggestedFix } }
                     : t
                 ),
               };
@@ -652,6 +657,10 @@ export default function Home() {
                       turn={turn}
                       isLastTurn={idx === (activeConversation.turns.length ?? 1) - 1}
                       streamingInterpretation={streamingInterpretation}
+                      onRerun={(fix) => {
+                        const context = `Previous regression: "${activeConversation.turns[0].prompt}". User now asks: ${fix}`;
+                        runAnalysis(context);
+                      }}
                     />
                   ))}
                 </div>
@@ -703,10 +712,12 @@ function TurnResults({
   turn,
   isLastTurn,
   streamingInterpretation,
+  onRerun,
 }: {
   turn: Turn;
   isLastTurn: boolean;
   streamingInterpretation: string;
+  onRerun?: (fix: string) => void;
 }) {
   const { output } = turn;
   const displayInterpretation = isLastTurn && streamingInterpretation ? streamingInterpretation : output.interpretation;
@@ -750,9 +761,19 @@ function TurnResults({
               </p>
             )}
             {output.economicValidation && (
-              <p className="text-sm text-zinc-300 leading-relaxed whitespace-pre-wrap border-t border-zinc-700 pt-4">
-                <span className="font-medium text-zinc-400">Economic validation:</span> {output.economicValidation}
-              </p>
+              <div className="border-t border-zinc-700 pt-4 space-y-3">
+                <p className="text-sm text-zinc-300 leading-relaxed whitespace-pre-wrap">
+                  <span className="font-medium text-zinc-400">Economic validation:</span> {output.economicValidation}
+                </p>
+                {isLastTurn && output.economicValidation.startsWith("⚠️") && output.suggestedFix && (
+                  <button
+                    onClick={() => onRerun?.(output.suggestedFix)}
+                    className="flex items-center gap-1.5 text-xs text-amber-400 hover:text-amber-300 border border-amber-500/40 hover:border-amber-400/60 rounded-lg px-3 py-1.5 bg-amber-500/10 hover:bg-amber-500/15 transition-colors"
+                  >
+                    ↺ Re-run with suggested fix
+                  </button>
+                )}
+              </div>
             )}
           </div>
         </section>
