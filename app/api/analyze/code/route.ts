@@ -57,6 +57,7 @@ When the user says "crude oil", "oil prices", or "oil" (and does not specify ano
 21. *** CRITICAL — ALWAYS convert EVERY series index to yearmon with index(x) <- as.yearmon(index(x)) BEFORE merge(). Without this, Yahoo month-end dates (e.g. "2010-01-29") never match FRED first-of-month dates ("2010-01-01"), and merge() returns zero rows → "0 (non-NA) cases". ***
 22. FRED rate/level series (FEDFUNDS, UNRATE, DGS10, TB3MS, etc.): assign raw xts as-is — do NOT compute diff(log()). FRED price index series (CPIAUCSL, PCEPI, GDPDEF, etc.): compute inflation = na.omit(diff(log(x))). Either way, convert index to yearmon afterward.
 23. Multiple regression (N predictors): lm(y ~ x1 + x2 + ... + xN, data=df). colnames(df) must list ALL N+1 variables in the same order as merge().
+24. *** NEVER call Cl() on a monthly xts. Always call Cl() on the raw daily xts FIRST, then pass the single-column result to to.monthly(). Calling Cl() on the output of to.monthly() causes "subscript out of bounds: no or multiple column name containing Close". ***
 
 === R TEMPLATE — FRED+Yahoo Mixed (use when ANY variable is FRED) ===
 
@@ -72,9 +73,12 @@ tryCatch({
   # Yahoo Finance User-Agent (only needed for Yahoo calls)
   options(HTTPUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
   # --- Yahoo Finance: fetch daily, convert to monthly returns ---
+  # Extract Cl() BEFORE to.monthly — calling Cl() on a multi-col monthly xts
+  # causes "no or multiple column name containing Close" errors.
   YAHOO_NAME_raw <- getSymbols("YAHOO_TICKER", src="yahoo", auto.assign=FALSE)
-  YAHOO_NAME_monthly <- to.monthly(YAHOO_NAME_raw, indexAt="lastof", OHLC=FALSE)
-  YAHOO_NAME <- na.omit(diff(log(Cl(YAHOO_NAME_monthly))))
+  YAHOO_NAME_close <- Cl(YAHOO_NAME_raw)
+  YAHOO_NAME_monthly <- to.monthly(YAHOO_NAME_close, indexAt="lastof", OHLC=FALSE)
+  YAHOO_NAME <- na.omit(diff(log(YAHOO_NAME_monthly)))
   index(YAHOO_NAME) <- as.yearmon(index(YAHOO_NAME))
   # --- FRED level series (e.g. FEDFUNDS, UNRATE): use raw value ---
   FRED_LEVEL_NAME_raw <- getSymbols("FRED_LEVEL_TICKER", src="FRED", auto.assign=FALSE)
