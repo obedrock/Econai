@@ -190,8 +190,12 @@ export async function POST(request: Request) {
     // FRED observations here and replace each getSymbols(..., src="FRED")
     // call with an inline xts object — no outbound R network call needed.
     const fredApiKey = process.env.FRED_API_KEY ?? "";
-    if (fredApiKey && codeToRun.includes('src="FRED"')) {
-      const fredPattern = /getSymbols\("([^"]+)",\s*src\s*=\s*"FRED"[^)]*\)/g;
+    const hasFred = codeToRun.includes('src="FRED"') || codeToRun.includes("src='FRED'");
+    if (fredApiKey && hasFred) {
+      // Match both single- and double-quoted forms:
+      //   getSymbols("CPIAUCSL", src="FRED", auto.assign=FALSE)
+      //   getSymbols('CPIAUCSL', src='FRED', auto.assign=FALSE)
+      const fredPattern = /getSymbols\(['"]([^'"]+)['"]\s*,\s*src\s*=\s*['"]FRED['"]\s*[^)]*\)/g;
       const fredMatches = [...codeToRun.matchAll(fredPattern)];
       for (const match of fredMatches) {
         const [fullMatch, seriesId] = match;

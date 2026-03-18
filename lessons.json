@@ -34,6 +34,13 @@
       "cause": "using CLF or auto.assign=TRUE for oil futures",
       "fix": "always use auto.assign=FALSE and assign oil futures (CL=F) to a variable named crude_oil, e.g. crude_oil <- getSymbols('CL=F', src='yahoo', auto.assign=FALSE). Never use CLF. Unless the user specifically specifies another symbol or name.",
       "timesEncountered": 1
+    },
+    {
+      "id": 6,
+      "error": "object 'cpi' not found (or any FRED variable not found)",
+      "cause": "FRED variable named differently in colnames(df) vs lm() formula, OR getSymbols used single quotes so server-side FRED injection regex didn't match and the variable was never assigned",
+      "fix": "1) Always fetch FRED series to NAME_raw then assign NAME <- na.omit(diff(log(NAME_raw))) using the EXACT same short name that appears in colnames(df) and lm(). Never use suffixes like _inflation or _var. 2) Always use double quotes in getSymbols(\"SERIES\", src=\"FRED\") so the injection regex matches reliably.",
+      "timesEncountered": 1
     }
   ],
   "autoFixes": [
