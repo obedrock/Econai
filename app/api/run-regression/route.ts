@@ -101,8 +101,8 @@ async function runRCode(code: string): Promise<{ stdout: string; stderr: string;
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ code }),
   });
-  const result = (await response.json()) as { stdout?: string; stderr?: string; exitCode?: number; error?: string };
-  const stdout = sanitizeEncoding(result.stdout ?? "");
+  const result = (await response.json()) as { stdout?: string; output?: string; stderr?: string; error?: string; exitCode?: number };
+  const stdout = sanitizeEncoding(result.stdout ?? result.output ?? "");
   const stderr = sanitizeEncoding(result.stderr ?? result.error ?? (response.ok ? "" : "Remote R run failed"));
   const exitCode = response.ok ? (result.exitCode ?? 0) : 1;
   return { stdout, stderr, exitCode };
