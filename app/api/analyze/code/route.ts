@@ -40,9 +40,10 @@ When the user says "crude oil", "oil prices", or "oil" (and does not specify ano
 6. NEVER use string multiplication; use cat("---\\n").
 7. ALWAYS wrap the script in tryCatch().
 8. ALWAYS install packages with suppressMessages(suppressWarnings()).
-9. ALWAYS end with the CHART_DATA JSON output.
-10. Always end your R script with a closing comment like # END OF SCRIPT so it is clear the script is complete.
-11. The column names in colnames(df) must EXACTLY match the variable names in lm(). Use the SAME names in colnames(), in lm(), and in chart_data.
+9. ALWAYS set options(HTTPUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36") immediately after loading libraries and BEFORE any getSymbols() call. This prevents Yahoo Finance from blocking downloads in server environments.
+10. ALWAYS end with the CHART_DATA JSON output.
+11. Always end your R script with a closing comment like # END OF SCRIPT so it is clear the script is complete.
+12. The column names in colnames(df) must EXACTLY match the variable names in lm(). Use the SAME names in colnames(), in lm(), and in chart_data.
 
 === OUTPUT FORMAT ===
 Output ONLY valid JSON: {"rCode": "<base64-encoded R script>"}. Base64-encode the R script.
@@ -58,6 +59,8 @@ tryCatch({
   }))
   library(quantmod)
   library(jsonlite)
+  # Fix Yahoo Finance User-Agent (required since 2024 or server-side gets blocked)
+  options(HTTPUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
   # Step 1: fetch with auto.assign=FALSE
   NAME1 <- getSymbols("TICKER1", src="yahoo", auto.assign=FALSE)
   NAME2 <- getSymbols("TICKER2", src="yahoo", auto.assign=FALSE)
