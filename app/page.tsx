@@ -381,15 +381,20 @@ export default function Home() {
       setActiveTab("results");
       setProgressMessage("Interpreting results...");
 
-      // Strip the large CHART_DATA JSON block — not needed for text interpretation
-      const rawOutput = [runData.stdout ?? "", runData.stderr ?? ""].filter(Boolean).join("\n--- stderr ---\n");
+      // Build interpretation input: extract only the regression summary.
+      // The R API may echo the R script before the output, so find "Call:"
+      // (from print(summary(model))) and send only from there onwards.
+      // Also strip the CHART_DATA JSON block which is not needed by the AI.
+      const rawOutput = runData.stdout ?? "";
       const chartDataMarker = rawOutput.indexOf("\n---CHART_DATA_BEGIN---");
       const chartDataEnd = rawOutput.indexOf("---CHART_DATA_END---");
-      const cleanOutput = chartDataMarker >= 0 && chartDataEnd > chartDataMarker
+      const withoutChartData = chartDataMarker >= 0 && chartDataEnd > chartDataMarker
         ? rawOutput.slice(0, chartDataMarker) + rawOutput.slice(chartDataEnd + "---CHART_DATA_END---".length)
         : rawOutput.indexOf("\nCHART_DATA:") >= 0
           ? rawOutput.slice(0, rawOutput.indexOf("\nCHART_DATA:"))
           : rawOutput;
+      const callIdx = withoutChartData.indexOf("\nCall:");
+      const cleanOutput = (callIdx >= 0 ? withoutChartData.slice(callIdx) : withoutChartData).trim();
 
       // Fire-and-forget: run interpretation + economic validation + save + history refresh
       (async () => {
