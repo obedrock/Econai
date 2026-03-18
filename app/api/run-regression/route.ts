@@ -246,8 +246,12 @@ export async function POST(request: Request) {
 
     const result = await runRCode(codeToRun);
 
-    const runError = result.stderr || result.stdout || "R script failed";
-    if (result.exitCode !== 0 && attempt < MAX_ATTEMPTS && isErrorFixable(runError)) {
+    // R scripts use tryCatch which catches errors and exits with code 0.
+    // Detect tryCatch-caught errors by looking for "ERROR:" lines in stdout.
+    const rTryCatchError = /(?:^|\n)ERROR:/m.test(result.stdout);
+    const isFailure = result.exitCode !== 0 || rTryCatchError;
+    const runError = result.stderr || (rTryCatchError ? result.stdout : "") || result.stdout || "R script failed";
+    if (isFailure && attempt < MAX_ATTEMPTS && isErrorFixable(runError)) {
       const apiKey = process.env.ANTHROPIC_API_KEY;
       if (apiKey) {
         try {
@@ -278,7 +282,7 @@ export async function POST(request: Request) {
       }
     }
 
-    if (result.exitCode !== 0) {
+    if (isFailure) {
       const userMessage = !isErrorFixable(runError)
         ? "Data or series unavailable (e.g. symbol/series not found). Check tickers and date range; no automatic fix was attempted."
         : undefined;

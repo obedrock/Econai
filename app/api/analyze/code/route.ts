@@ -58,6 +58,7 @@ When the user says "crude oil", "oil prices", or "oil" (and does not specify ano
 22. FRED rate/level series (FEDFUNDS, UNRATE, DGS10, TB3MS, etc.): assign raw xts as-is — do NOT compute diff(log()). FRED price index series (CPIAUCSL, PCEPI, GDPDEF, etc.): compute inflation = na.omit(diff(log(x))). Either way, convert index to yearmon afterward.
 23. Multiple regression (N predictors): lm(y ~ x1 + x2 + ... + xN, data=df). colnames(df) must list ALL N+1 variables in the same order as merge().
 24. *** NEVER call Cl() on a monthly xts. Always call Cl() on the raw daily xts FIRST, then pass the single-column result to to.monthly(). Calling Cl() on the output of to.monthly() causes "subscript out of bounds: no or multiple column name containing Close". ***
+25. *** NEVER use periodReturn(), dailyReturn(), monthlyReturn(), weeklyReturn(), or annualReturn(). These quantmod functions have a `type` argument that MUST be exactly "continuous" or "discrete" — passing any other value (e.g. "log", "arithmetic", "geometric") throws the error "'arg' should be one of continuous, discrete". ALWAYS compute log returns as na.omit(diff(log(Cl(x)))) instead. ***
 
 === R TEMPLATE — FRED+Yahoo Mixed (use when ANY variable is FRED) ===
 
