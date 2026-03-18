@@ -50,10 +50,64 @@ When the user says "crude oil", "oil prices", or "oil" (and does not specify ano
 16. *** FORBIDDEN — Do NOT add any extra cat(), print(), sprintf(), or if/else interpretation blocks (e.g. "if (beta > 1)") beyond print(summary(model)) and the CHART_DATA block. Extra output breaks the parser. After print(summary(model)), the NEXT line must be the chart_data list — nothing else. ***
 17. The 6-step template is COMPLETE and FINAL. Do NOT skip, reorder, or replace any step. Steps 2 through 6 (Cl(), diff(log()), merge(), as.data.frame(), lm()) are ALL mandatory and must appear in the exact order shown in the template. A script missing any of these steps is WRONG.
 
+=== FRED DATA RULES (apply when ANY variable uses src="FRED") ===
+18. When ANY variable is FRED, use the FRED+Yahoo Mixed template (below) instead of the Yahoo-only template.
+19. FRED fetch: NAME_raw <- getSymbols("FRED_ID", src="FRED", auto.assign=FALSE). The User-Agent option is NOT needed for FRED — only set it for Yahoo calls.
+20. Yahoo daily → monthly: NAME_monthly <- to.monthly(NAME_raw, indexAt="lastof", OHLC=FALSE); NAME_var <- na.omit(diff(log(Cl(NAME_monthly)))); index(NAME_var) <- as.yearmon(index(NAME_var))
+21. *** CRITICAL — ALWAYS convert EVERY series index to yearmon with index(x) <- as.yearmon(index(x)) BEFORE merge(). Without this, Yahoo month-end dates (e.g. "2010-01-29") never match FRED first-of-month dates ("2010-01-01"), and merge() returns zero rows → "0 (non-NA) cases". ***
+22. FRED rate/level series (FEDFUNDS, UNRATE, DGS10, TB3MS, etc.): assign raw xts as-is — do NOT compute diff(log()). FRED price index series (CPIAUCSL, PCEPI, GDPDEF, etc.): compute inflation = na.omit(diff(log(x))). Either way, convert index to yearmon afterward.
+23. Multiple regression (N predictors): lm(y ~ x1 + x2 + ... + xN, data=df). colnames(df) must list ALL N+1 variables in the same order as merge().
+
+=== R TEMPLATE — FRED+Yahoo Mixed (use when ANY variable is FRED) ===
+
+tryCatch({
+  Sys.setlocale("LC_ALL", "English")
+  options(encoding = "UTF-8")
+  suppressMessages(suppressWarnings({
+    if (!require("quantmod", quietly = TRUE)) install.packages("quantmod", repos = "https://cloud.r-project.org")
+    if (!require("jsonlite", quietly = TRUE)) install.packages("jsonlite", repos = "https://cloud.r-project.org")
+  }))
+  library(quantmod)
+  library(jsonlite)
+  # Yahoo Finance User-Agent (only needed for Yahoo calls)
+  options(HTTPUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+  # --- Yahoo Finance: fetch daily, convert to monthly returns ---
+  YAHOO_NAME_raw <- getSymbols("YAHOO_TICKER", src="yahoo", auto.assign=FALSE)
+  YAHOO_NAME_monthly <- to.monthly(YAHOO_NAME_raw, indexAt="lastof", OHLC=FALSE)
+  YAHOO_NAME <- na.omit(diff(log(Cl(YAHOO_NAME_monthly))))
+  index(YAHOO_NAME) <- as.yearmon(index(YAHOO_NAME))
+  # --- FRED level series (e.g. FEDFUNDS, UNRATE): use raw value ---
+  FRED_LEVEL_NAME_raw <- getSymbols("FRED_LEVEL_TICKER", src="FRED", auto.assign=FALSE)
+  FRED_LEVEL_NAME <- FRED_LEVEL_NAME_raw
+  index(FRED_LEVEL_NAME) <- as.yearmon(index(FRED_LEVEL_NAME))
+  # --- FRED price index series (e.g. CPIAUCSL): compute log change ---
+  FRED_INDEX_NAME_raw <- getSymbols("FRED_INDEX_TICKER", src="FRED", auto.assign=FALSE)
+  FRED_INDEX_NAME <- na.omit(diff(log(FRED_INDEX_NAME_raw)))
+  index(FRED_INDEX_NAME) <- as.yearmon(index(FRED_INDEX_NAME))
+  # --- Merge all by yearmon index (all indices are now yearmon) ---
+  combined <- na.omit(merge(YAHOO_NAME, FRED_INDEX_NAME, FRED_LEVEL_NAME, FRED_LEVEL_NAME2))
+  combined <- combined["START/END"]
+  # --- Data frame (colnames MUST match lm() below) ---
+  df <- as.data.frame(combined)
+  colnames(df) <- c("YAHOO_NAME", "FRED_INDEX_NAME", "FRED_LEVEL_NAME", "FRED_LEVEL_NAME2")
+  # --- Multiple regression ---
+  model <- lm(YAHOO_NAME ~ FRED_INDEX_NAME + FRED_LEVEL_NAME + FRED_LEVEL_NAME2, data=df)
+  print(summary(model))
+  chart_data <- list(
+    scatter = lapply(seq_len(nrow(df)), function(i) list(x=df[i,2], y=df[i,1])),
+    timeseries = lapply(seq_len(nrow(df)), function(i) list(date=as.character(rownames(df)[i]), y=df[i,1], x=df[i,2])),
+    coefficients = as.list(coef(model))
+  )
+  cat("\\n---CHART_DATA_BEGIN---\\n")
+  cat(jsonlite::toJSON(chart_data, auto_unbox=TRUE))
+  cat("\\n---CHART_DATA_END---\\n")
+}, error = function(e) { cat("ERROR:", conditionMessage(e), "\\n") })
+# END OF SCRIPT
+
 === OUTPUT FORMAT ===
 Output ONLY valid JSON: {"rCode": "<base64-encoded R script>"}. Base64-encode the R script.
 
-=== R TEMPLATE (exact 6-step pattern) ===
+=== R TEMPLATE — Yahoo-only (use when ALL variables are Yahoo Finance) ===
 
 tryCatch({
   Sys.setlocale("LC_ALL", "English")
@@ -116,11 +170,21 @@ export async function POST(request: Request) {
     }
 
     const atLeastOneVerified = list.some((v) => v.verified);
-    const yahooList = list.filter((v) => v.source === "yahoo");
-    const ticker1 = yahooList[0]?.id ?? list[0].id;
-    const ticker2 = yahooList[1]?.id ?? list[1]?.id ?? list[0].id;
+    const hasFRED = list.some((v) => v.source === "FRED");
 
     function tickerToName(t: string): string {
+      // FRED series IDs
+      const fredMap: Record<string, string> = {
+        CPIAUCSL: "cpi", PCEPI: "pce_inflation", GDPDEF: "gdp_deflator",
+        FEDFUNDS: "fedfunds", DFF: "fedfunds", TB3MS: "tbill3m",
+        DGS10: "dgs10", DGS2: "dgs2", T10Y2Y: "t10y2y",
+        UNRATE: "unrate", PAYEMS: "nonfarm_payroll",
+        GDP: "gdp", INDPRO: "indpro", HOUST: "housing_starts",
+        SP500: "sp500", DSPIC96: "disposable_income",
+        UMCSENT: "consumer_sentiment", VIXCLS: "vix",
+      };
+      if (fredMap[t]) return fredMap[t];
+      // Yahoo Finance special cases
       const s = t.replace(/[\^=]/g, "").replace(/[-.]/g, "_").toLowerCase();
       if (s === "gspc") return "sp500";
       if (s === "vix") return "vix";
@@ -128,6 +192,22 @@ export async function POST(request: Request) {
       if (s === "eth_usd") return "eth";
       return s.slice(0, 12);
     }
+
+    // Build per-variable metadata used in the prompt
+    const vars = list.map((v) => ({
+      ticker: v.id,
+      name: tickerToName(v.id),
+      source: v.source,
+    }));
+    const depVar = vars[0];
+    const indepVars = vars.slice(1);
+    const lmFormula = `lm(${depVar.name} ~ ${indepVars.map((v) => v.name).join(" + ")}, data=df)`;
+    const colnamesList = `c("${vars.map((v) => v.name).join('", "')}")`;
+
+    // Keep ticker1/ticker2 for backward compat with the Yahoo-only path
+    const yahooList = list.filter((v) => v.source === "yahoo");
+    const ticker1 = yahooList[0]?.id ?? list[0].id;
+    const ticker2 = yahooList[1]?.id ?? list[1]?.id ?? list[0].id;
     const name1 = tickerToName(ticker1);
     const name2 = tickerToName(ticker2);
 
@@ -141,7 +221,10 @@ export async function POST(request: Request) {
 
     const lessonsBlock = await getLessonsFormattedForPrompt();
     const systemPrompt = lessonsBlock + CODE_SYSTEM_PREFIX(list) + SYSTEM_PROMPT_BASE;
-    const userPrompt = `User request: ${message}\n\nUse TICKER1="${ticker1}" and TICKER2="${ticker2}". Use NAME1="${name1}" and NAME2="${name2}" in colnames(df) and in lm(${name1} ~ ${name2}, data=df). The chart_data block already uses column indices (df[i,1], df[i,2]) — do NOT change those to column names. Choose START/END from the user's date range.`;
+    const varLines = vars.map((v) => `  ${v.name}: ticker="${v.ticker}" src="${v.source}"`).join("\n");
+    const userPrompt = hasFRED
+      ? `User request: ${message}\n\nVariables (in regression order):\n${varLines}\n\nUse the FRED+Yahoo Mixed template.\nDependent variable (Y): ${depVar.name} (${depVar.source} ticker "${depVar.ticker}")\nIndependent variables: ${indepVars.map((v) => `${v.name} (${v.source} ticker "${v.ticker}")`).join(", ")}\nExact lm() formula: ${lmFormula}\nExact colnames(df): ${colnamesList}\nThe chart_data block uses df[i,1] and df[i,2] (column indices) — do NOT change those to column names.\nChoose START/END from the user's date range.`
+      : `User request: ${message}\n\nUse TICKER1="${ticker1}" and TICKER2="${ticker2}". Use NAME1="${name1}" and NAME2="${name2}" in colnames(df) and in lm(${name1} ~ ${name2}, data=df). The chart_data block already uses column indices (df[i,1], df[i,2]) — do NOT change those to column names. Choose START/END from the user's date range.`;
 
     const client = new Anthropic({ apiKey });
     const response = await client.messages.create({
