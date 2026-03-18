@@ -314,14 +314,19 @@ export async function POST(request: Request) {
       if (chartIdx >= 0) {
         const after = result.stdout.slice(chartIdx + "CHART_DATA:".length);
         const first = after.indexOf("{");
-        const last = after.lastIndexOf("}");
-        if (first !== -1 && last >= first) {
+        if (first !== -1) {
+          let d = 0, last = -1;
+          for (let i = first; i < after.length; i++) {
+            if (after[i] === "{") d++;
+            else if (after[i] === "}") { d--; if (d === 0) { last = i; break; } }
+          }
+        if (last !== -1) {
           try {
             chartData = JSON.parse(after.slice(first, last + 1)) as Record<string, unknown>;
           } catch {
             // leave chartData null
           }
-        }
+        }}
       }
     }
 

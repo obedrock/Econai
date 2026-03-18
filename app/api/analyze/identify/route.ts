@@ -48,8 +48,21 @@ export async function POST(request: Request) {
     }
 
     const first = text.indexOf("{");
-    const last = text.lastIndexOf("}");
-    if (first === -1 || last === -1 || last < first) {
+    if (first === -1) {
+      return NextResponse.json(
+        { error: "No JSON object found in Claude response" },
+        { status: 500 }
+      );
+    }
+    // Use bracket-depth matching to find the first complete JSON object.
+    // lastIndexOf("}") breaks when Claude appends trailing text with "}" chars.
+    let depth = 0;
+    let last = -1;
+    for (let i = first; i < text.length; i++) {
+      if (text[i] === "{") depth++;
+      else if (text[i] === "}") { depth--; if (depth === 0) { last = i; break; } }
+    }
+    if (last === -1) {
       return NextResponse.json(
         { error: "No JSON object found in Claude response" },
         { status: 500 }

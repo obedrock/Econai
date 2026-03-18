@@ -138,10 +138,21 @@ export async function POST(request: Request) {
       );
     }
 
-    // Parse JSON: only what's between first { and last }
+    // Parse JSON using bracket-depth matching (lastIndexOf breaks when Claude
+    // appends trailing text containing "}" after the JSON object).
     const first = text.indexOf("{");
-    const last = text.lastIndexOf("}");
-    if (first === -1 || last === -1 || last < first) {
+    if (first === -1) {
+      return NextResponse.json(
+        { error: "No JSON object found in Claude response" },
+        { status: 500 }
+      );
+    }
+    let depth = 0, last = -1;
+    for (let i = first; i < text.length; i++) {
+      if (text[i] === "{") depth++;
+      else if (text[i] === "}") { depth--; if (depth === 0) { last = i; break; } }
+    }
+    if (last === -1) {
       return NextResponse.json(
         { error: "No JSON object found in Claude response" },
         { status: 500 }
