@@ -226,6 +226,67 @@ export async function POST(request: Request) {
       }
     }
 
+    // Server-side Yahoo Finance data injection.
+    // Eliminates getSymbols() outbound network calls from inside R (2–10 s each).
+    // Fetches 15 years of daily close prices via Next.js and injects an inline xts.
+    // The column name "TICKER.Close" lets Cl() work correctly in the R code.
+    const hasYahoo = codeToRun.includes('src="yahoo"') || codeToRun.includes("src='yahoo'");
+    if (hasYahoo) {
+      const yahooPattern = /getSymbols\(['"]([^'"]+)['"]\s*,\s*src\s*=\s*['"]yahoo['"]\s*[^)]*\)/g;
+      const yahooMatches = [...codeToRun.matchAll(yahooPattern)];
+      if (yahooMatches.length > 0) {
+        const injections = await Promise.all(
+          yahooMatches.map(async (match) => {
+            const [fullMatch, ticker] = match;
+            try {
+              const yahooUrl =
+                `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}` +
+                `?interval=1d&range=15y`;
+              const yahooRes = await fetch(yahooUrl, {
+                headers: {
+                  "User-Agent":
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                },
+              });
+              if (!yahooRes.ok) return null;
+              const yahooData = (await yahooRes.json()) as {
+                chart?: {
+                  result?: Array<{
+                    timestamp?: number[];
+                    indicators?: { quote?: Array<{ close?: (number | null)[] }> };
+                  }>;
+                };
+              };
+              const chartResult = yahooData.chart?.result?.[0];
+              const timestamps = chartResult?.timestamp;
+              const closes = chartResult?.indicators?.quote?.[0]?.close;
+              if (!timestamps || !closes || timestamps.length === 0) return null;
+              // Pair timestamps with valid (non-null) close prices
+              const pairs: { date: string; close: number }[] = [];
+              for (let i = 0; i < timestamps.length; i++) {
+                const c = closes[i];
+                if (c == null || isNaN(c)) continue;
+                pairs.push({ date: new Date(timestamps[i] * 1000).toISOString().split("T")[0], close: c });
+              }
+              if (pairs.length === 0) return null;
+              const datesStr = pairs.map((p) => `"${p.date}"`).join(",");
+              const closesStr = pairs.map((p) => p.close).join(",");
+              const colName = `${ticker.replace(/[^A-Za-z0-9]/g, ".")}.Close`;
+              const inlineR =
+                `local({ tmp <- xts::xts(as.numeric(c(${closesStr})), ` +
+                `order.by=as.Date(c(${datesStr}))); colnames(tmp) <- "${colName}"; tmp })`;
+              return { fullMatch, inlineR };
+            } catch {
+              return null; // R falls back to live getSymbols()
+            }
+          })
+        );
+        for (const inj of injections) {
+          if (inj) codeToRun = codeToRun.replace(inj.fullMatch, inj.inlineR);
+        }
+      }
+    }
+
     if (!codeToRun.includes("# END OF SCRIPT")) {
       const apiKey = process.env.ANTHROPIC_API_KEY;
       if (apiKey) {
