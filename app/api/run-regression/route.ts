@@ -400,6 +400,44 @@ export async function POST(request: Request) {
 
     codeToRun = await injectDataSources(codeToRun, fredApiKey);
 
+    // yearmon index safety pass.
+    //
+    // When merge() receives series with MIXED index classes (e.g. Date from
+    // to.monthly() and yearmon from as.yearmon()) xts coerces yearmon integers
+    // (~1338 months since 1900) as numeric row indices into the Date-indexed
+    // series (~15000 rows >> nrow), producing "subscript out of bounds".
+    //
+    // The template always includes `index(var) <- as.yearmon(index(var))` for
+    // every series, but Claude sometimes omits the line (especially for the
+    // Yahoo ticker).  We detect any variable referenced in merge() that lacks
+    // an as.yearmon() call and inject the missing line immediately before the
+    // merge() statement.
+    {
+      const mergeLineMatch = codeToRun.match(/\bmerge\s*\([^)]+\)/);
+      if (mergeLineMatch) {
+        const mergeArgs = mergeLineMatch[0]
+          .replace(/^merge\s*\(/, "")
+          .replace(/\)$/, "");
+        const mergeVarsList = mergeArgs
+          .split(",")
+          .map((s) => s.trim())
+          .filter((s) => /^[a-z][a-z0-9_]*$/.test(s));
+        const missingYearmon = mergeVarsList.filter(
+          (v) => !new RegExp(`index\\s*\\(\\s*${v}\\s*\\)\\s*<-\\s*as\\.yearmon`).test(codeToRun)
+        );
+        if (missingYearmon.length > 0) {
+          const injectedLines = missingYearmon
+            .map((v) => `index(${v}) <- as.yearmon(index(${v}))`)
+            .join("\n");
+          // Insert the yearmon conversions on the line immediately before merge()
+          codeToRun = codeToRun.replace(
+            mergeLineMatch[0],
+            injectedLines + "\n  " + mergeLineMatch[0]
+          );
+        }
+      }
+    }
+
     // Logical completeness check: find variables used in merge() and verify
     // each has an assignment (<-) earlier in the code. Claude sometimes generates
     // a valid-looking script (with # END OF SCRIPT) that is missing entire sections
@@ -454,8 +492,12 @@ export async function POST(request: Request) {
     const result = await runRCode(codeToRun);
 
     // R scripts use tryCatch which catches errors and exits with code 0.
-    // Detect tryCatch-caught errors by looking for "ERROR:" lines in stdout.
-    const rTryCatchError = /(?:^|\n)ERROR:/m.test(result.stdout);
+    // Detect tryCatch-caught errors by looking for "ERROR:" lines in stdout,
+    // OR a bare JSON {"error":"..."} object (used by some Claude-generated
+    // tryCatch handlers instead of the canonical cat("ERROR:", ...) format).
+    const rTryCatchError =
+      /(?:^|\n)ERROR:/m.test(result.stdout) ||
+      (/"error"\s*:/.test(result.stdout) && !result.stdout.includes("---CHART_DATA_BEGIN---"));
     const isFailure = result.exitCode !== 0 || rTryCatchError;
     const runError = result.stderr || (rTryCatchError ? result.stdout : "") || result.stdout || "R script failed";
     if (isFailure && attempt < MAX_ATTEMPTS && isErrorFixable(runError)) {

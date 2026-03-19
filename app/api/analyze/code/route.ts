@@ -79,7 +79,8 @@ When the user says "crude oil", "oil prices", or "oil" (and does not specify ano
       Either way, convert index to yearmon afterward.
 23. Multiple regression (N predictors): lm(y ~ x1 + x2 + ... + xN, data=df). colnames(df) must list ALL N+1 variables in the same order as merge().
 24. *** NEVER call Cl() on a monthly xts. Always call Cl() on the raw daily xts FIRST, then pass the single-column result to to.monthly(). Calling Cl() on the output of to.monthly() causes "subscript out of bounds: no or multiple column name containing Close". ***
-25. *** NEVER use periodReturn(), dailyReturn(), monthlyReturn(), weeklyReturn(), or annualReturn(). These quantmod functions have a type argument that MUST be exactly "continuous" or "discrete" — passing any other value (e.g. "log", "arithmetic", "geometric") throws the error "'arg' should be one of continuous, discrete". ALWAYS compute log returns as na.omit(diff(log(Cl(x)))) instead. ***
+25. *** NEVER use periodReturn(), dailyReturn(), monthlyReturn(), weeklyReturn(), annualReturn(), or ROC(). ALWAYS compute log returns as na.omit(diff(log(Cl(x)))) instead. ROC() is banned because it produces simple returns (not log returns) and its column-name output causes index-class conflicts. ***
+26. *** CRITICAL — The tryCatch error handler MUST use: }, error = function(e) { cat("ERROR:", conditionMessage(e), "\n") }) — NEVER output the error as JSON (e.g. cat(jsonlite::toJSON(list(error=...))) is FORBIDDEN). The error detection pipeline looks for the literal string "ERROR:" at the start of a line; JSON error objects are invisible to it and prevent auto-fix from running. ***
 
 === AUTO-TRANSFORMATION DEFAULTS (apply when user does NOT explicitly specify the data format) ===
 
