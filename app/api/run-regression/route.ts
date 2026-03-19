@@ -165,6 +165,45 @@ async function generateOneAutoFix(
   return null;
 }
 
+/**
+ * Extract getSymbols() calls from R code using balanced-paren matching.
+ * Works regardless of argument order, whitespace, or line breaks inside the call.
+ * Only returns calls where src="SOURCE" appears anywhere in the argument list.
+ */
+function findGetSymbolsCalls(
+  code: string,
+  source: "yahoo" | "FRED"
+): Array<{ fullMatch: string; ticker: string }> {
+  const results: Array<{ fullMatch: string; ticker: string }> = [];
+  const needle = "getSymbols(";
+  let searchFrom = 0;
+  while (true) {
+    const callStart = code.indexOf(needle, searchFrom);
+    if (callStart === -1) break;
+    const openParen = callStart + needle.length - 1; // index of '('
+    let depth = 0;
+    let closeParen = -1;
+    for (let i = openParen; i < code.length; i++) {
+      if (code[i] === "(") depth++;
+      else if (code[i] === ")") {
+        depth--;
+        if (depth === 0) { closeParen = i; break; }
+      }
+    }
+    if (closeParen === -1) { searchFrom = callStart + 1; continue; }
+    const fullMatch = code.slice(callStart, closeParen + 1);
+    const argsStr = code.slice(openParen + 1, closeParen);
+    const srcRe = new RegExp(`\\bsrc\\s*=\\s*['"]${source}['"]`, "i");
+    if (!srcRe.test(argsStr)) { searchFrom = closeParen + 1; continue; }
+    // First quoted string in the args is the ticker/series ID
+    const tickerMatch = argsStr.match(/^\s*['"]([^'"]+)['"]/);
+    if (!tickerMatch) { searchFrom = closeParen + 1; continue; }
+    results.push({ fullMatch, ticker: tickerMatch[1] });
+    searchFrom = closeParen + 1;
+  }
+  return results;
+}
+
 export async function POST(request: Request) {
   try {
     const body = (await request.json()) as {
@@ -194,13 +233,9 @@ export async function POST(request: Request) {
     const fredApiKey = process.env.FRED_API_KEY ?? "";
     const hasFred = codeToRun.includes('src="FRED"') || codeToRun.includes("src='FRED'");
     if (fredApiKey && hasFred) {
-      // Match both single- and double-quoted forms:
-      //   getSymbols("CPIAUCSL", src="FRED", auto.assign=FALSE)
-      //   getSymbols('CPIAUCSL', src='FRED', auto.assign=FALSE)
-      const fredPattern = /getSymbols\(['"]([^'"]+)['"]\s*,\s*src\s*=\s*['"]FRED['"]\s*[^)]*\)/g;
-      const fredMatches = [...codeToRun.matchAll(fredPattern)];
+      const fredMatches = findGetSymbolsCalls(codeToRun, "FRED");
       for (const match of fredMatches) {
-        const [fullMatch, seriesId] = match;
+        const { fullMatch, ticker: seriesId } = match;
         try {
           const fredUrl =
             `https://api.stlouisfed.org/fred/series/observations` +
@@ -232,12 +267,11 @@ export async function POST(request: Request) {
     // The column name "TICKER.Close" lets Cl() work correctly in the R code.
     const hasYahoo = codeToRun.includes('src="yahoo"') || codeToRun.includes("src='yahoo'");
     if (hasYahoo) {
-      const yahooPattern = /getSymbols\(['"]([^'"]+)['"]\s*,\s*src\s*=\s*['"]yahoo['"]\s*[^)]*\)/g;
-      const yahooMatches = [...codeToRun.matchAll(yahooPattern)];
+      const yahooMatches = findGetSymbolsCalls(codeToRun, "yahoo");
       if (yahooMatches.length > 0) {
         const injections = await Promise.all(
           yahooMatches.map(async (match) => {
-            const [fullMatch, ticker] = match;
+            const { fullMatch, ticker } = match;
             try {
               const yahooUrl =
                 `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}` +
