@@ -262,10 +262,10 @@ export async function POST(request: Request) {
     }
 
     // Server-side Yahoo Finance data injection.
-    // Eliminates getSymbols() outbound network calls from inside R (2–10 s each).
-    // Fetches daily close prices via Next.js and injects an inline xts.
+    // Fetches daily close prices from Yahoo, aggregates to MONTHLY in JS,
+    // then injects a compact (~180-point) inline xts into the R code.
     // Column name "TICKER.Close" lets Cl() work correctly in R code.
-    // Tries query1 then query2 as fallback; no User-Agent (server-to-server works fine).
+    // Tries query1 then query2 as fallback; no User-Agent needed server-to-server.
     const hasYahoo = codeToRun.includes('src="yahoo"') || codeToRun.includes("src='yahoo'");
     if (hasYahoo) {
       const yahooMatches = findGetSymbolsCalls(codeToRun, "yahoo");
@@ -277,6 +277,7 @@ export async function POST(request: Request) {
             const urlCandidates = [
               `https://query1.finance.yahoo.com/v8/finance/chart/${encoded}?interval=1d&range=15y`,
               `https://query2.finance.yahoo.com/v8/finance/chart/${encoded}?interval=1d&range=15y`,
+              `https://query1.finance.yahoo.com/v8/finance/chart/${encoded}?interval=1mo&range=15y`,
             ];
             for (const yahooUrl of urlCandidates) {
               try {
@@ -298,15 +299,24 @@ export async function POST(request: Request) {
                   chartResult?.indicators?.quote?.[0]?.close;
                 if (!timestamps || !closes || timestamps.length === 0) continue;
                 // Pair timestamps with valid (non-null) close prices
-                const pairs: { date: string; close: number }[] = [];
+                const dailyPairs: { date: string; close: number }[] = [];
                 for (let i = 0; i < timestamps.length; i++) {
                   const c = closes[i];
                   if (c == null || isNaN(c)) continue;
-                  pairs.push({ date: new Date(timestamps[i] * 1000).toISOString().split("T")[0], close: c });
+                  dailyPairs.push({ date: new Date(timestamps[i] * 1000).toISOString().split("T")[0], close: c });
                 }
-                if (pairs.length === 0) continue;
-                const datesStr = pairs.map((p) => `"${p.date}"`).join(",");
-                const closesStr = pairs.map((p) => p.close).join(",");
+                if (dailyPairs.length === 0) continue;
+                // Aggregate daily → monthly: take last close per YYYY-MM
+                // This keeps the inline payload small (~180 rows for 15y)
+                const monthlyMap = new Map<string, { date: string; close: number }>();
+                for (const p of dailyPairs) {
+                  const ym = p.date.slice(0, 7); // "YYYY-MM"
+                  monthlyMap.set(ym, p); // overwrites → keeps last day of month
+                }
+                const monthlyPairs = Array.from(monthlyMap.values());
+                if (monthlyPairs.length === 0) continue;
+                const datesStr = monthlyPairs.map((p) => `"${p.date}"`).join(",");
+                const closesStr = monthlyPairs.map((p) => p.close).join(",");
                 const colName = `${ticker.replace(/[^A-Za-z0-9]/g, ".")}.Close`;
                 const inlineR =
                   `local({ tmp <- xts::xts(as.numeric(c(${closesStr})), ` +
