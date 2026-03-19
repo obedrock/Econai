@@ -342,15 +342,29 @@ export async function POST(request: Request) {
       );
     }
 
-    // Validate that the generated code contains the regression step.
-    // If not, retry once — Claude may have skipped the core steps.
-    if (!rCode.includes("lm(")) {
+    // Validate completeness: the code must contain lm() AND all variables used
+    // in merge() must have assignments. Claude sometimes generates code that
+    // references cpi/fedfunds/unrate in merge() but never defines them — the
+    // Code tab then shows broken code even though run-regression works around it.
+    const mergeArgsMatch = rCode.match(/\bmerge\s*\(([^)]+)\)/);
+    const mergeVarNames = mergeArgsMatch
+      ? mergeArgsMatch[1].split(",").map((s) => s.trim()).filter((s) => /^[a-z][a-z0-9_]*$/.test(s))
+      : [];
+    const undefinedInMerge = mergeVarNames.filter(
+      (v) => !new RegExp(`\\b${v}\\s*<-`).test(rCode)
+    );
+    const missingVars = undefinedInMerge.length > 0;
+
+    if (!rCode.includes("lm(") || missingVars) {
+      const retryReason = !rCode.includes("lm(")
+        ? "Your previous output was missing the lm() regression call."
+        : `Your previous output was missing definitions for: ${undefinedInMerge.join(", ")}. These variables appear in merge() but are never assigned — you must include ALL data-loading steps from the template (Yahoo getSymbols, every FRED getSymbols, transformations).`;
       const retryResponse = await client.messages.create({
         model: "claude-sonnet-4-6",
         max_tokens: 4096,
         system: systemPrompt,
         messages: [
-          { role: "user", content: userPrompt + "\n\nCRITICAL: Your previous output was missing the lm() regression call. You MUST include ALL 6 steps from the template. Output the complete base64-encoded R script." },
+          { role: "user", content: userPrompt + `\n\nCRITICAL: ${retryReason} Output the complete base64-encoded R script with ALL required sections.` },
         ],
       });
       const retryBlock = retryResponse.content.find((b) => b.type === "text");
@@ -370,7 +384,11 @@ export async function POST(request: Request) {
           const retryParsed = JSON.parse(retryJsonStr) as { rCode?: string };
           if (typeof retryParsed.rCode === "string") {
             const retryDecoded = Buffer.from(retryParsed.rCode, "base64").toString("utf-8");
-            if (retryDecoded.includes("lm(")) rCode = retryDecoded;
+            // Accept retry only if both lm() is present AND previously-undefined vars are now defined
+            const retryFixed =
+              retryDecoded.includes("lm(") &&
+              undefinedInMerge.every((v) => new RegExp(`\\b${v}\\s*<-`).test(retryDecoded));
+            if (retryFixed) rCode = retryDecoded;
           }
         } catch { /* keep original rCode */ }
       }
