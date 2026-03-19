@@ -275,7 +275,7 @@ export async function POST(request: Request) {
             try {
               const yahooUrl =
                 `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}` +
-                `?interval=1d&range=15y`;
+                `?interval=1mo&range=15y`;
               const yahooRes = await fetch(yahooUrl, {
                 headers: {
                   "User-Agent":
