@@ -397,16 +397,38 @@ export async function POST(request: Request) {
       }
     }
 
-    if (!codeToRun.includes("# END OF SCRIPT")) {
+    // Logical completeness check: find variables used in merge() and verify
+    // each has an assignment (<-) earlier in the code. Claude sometimes generates
+    // a valid-looking script (with # END OF SCRIPT) that is missing entire sections
+    // (e.g. FRED data loading or the log-returns line for Yahoo tickers).
+    const mergeVarMatch = codeToRun.match(/\bmerge\s*\(([^)]+)\)/);
+    const mergeVars = mergeVarMatch
+      ? mergeVarMatch[1]
+          .split(",")
+          .map((s) => s.trim())
+          .filter((s) => /^[a-z][a-z0-9_.]*$/.test(s))
+      : [];
+    const undefinedMergeVars = mergeVars.filter(
+      (v) => !new RegExp(`\\b${v}\\s*<-`).test(codeToRun)
+    );
+    const isLogicallyIncomplete =
+      undefinedMergeVars.length > 0 ||
+      // spy_monthly defined but spy log-return line is missing
+      (/spy_monthly\s*<-/.test(codeToRun) && !/\bspy\s*<-/.test(codeToRun));
+
+    if (!codeToRun.includes("# END OF SCRIPT") || isLogicallyIncomplete) {
       const apiKey = process.env.ANTHROPIC_API_KEY;
       if (apiKey) {
         try {
           const client = new Anthropic({ apiKey });
+          const incompleteMsg = isLogicallyIncomplete && codeToRun.includes("# END OF SCRIPT")
+            ? `This R script is structurally complete but logically incomplete — the following variables are used in merge() but never defined: ${undefinedMergeVars.join(", ")}. Add all missing variable definitions (data loading, transformations) in the correct position and return the full corrected script:`
+            : "Your R code was cut off, please complete it:";
           const msg = await client.messages.create({
             model: "claude-sonnet-4-6",
-            max_tokens: 4096,
+            max_tokens: 8192,
             system: COMPLETE_SCRIPT_PROMPT,
-            messages: [{ role: "user", content: "Your R code was cut off, please complete it:\n\n" + codeToRun }],
+            messages: [{ role: "user", content: incompleteMsg + "\n\n" + codeToRun }],
           });
           const textBlock = msg.content.find((b) => b.type === "text");
           if (textBlock && "text" in textBlock) {
