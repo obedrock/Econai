@@ -6,7 +6,14 @@ export const maxDuration = 120;
 
 const R_API_URL = process.env.R_API_URL || "http://localhost:3001";
 
-const COMPLETE_SCRIPT_PROMPT = `You complete truncated R code. The user will paste R code that was cut off. Return ONLY the complete, runnable R script as plain text. Do not wrap in markdown or code fences. Do not add explanations. The script must end with a closing comment: # END OF SCRIPT. Preserve the existing code and add any missing parts (e.g. closing braces, the CHART_DATA block, tryCatch closure).`;
+const COMPLETE_SCRIPT_PROMPT = `You complete or repair incomplete R code. The user will paste R code that is either cut off or is missing variable definitions. Return ONLY the complete, runnable R script as plain text. Do not wrap in markdown or code fences. Do not add explanations. The script must end with a closing comment: # END OF SCRIPT. Preserve the existing code and add any missing parts (e.g. closing braces, the CHART_DATA block, tryCatch closure, missing getSymbols calls for FRED or Yahoo).
+
+CRITICAL RULES — violating any of these will break the pipeline:
+- NEVER use synthetic, placeholder, or randomly-generated data (no rnorm, runif, cumsum fake data).
+- NEVER wrap getSymbols() calls in tryCatch with NULL fallbacks. Data is injected server-side; if the call is in the code, it WILL succeed.
+- ALWAYS use getSymbols("SERIES", src="FRED", auto.assign=FALSE) for FRED data (exact syntax, no spaces around =).
+- ALWAYS use getSymbols("TICKER", src="yahoo", auto.assign=FALSE) for Yahoo data (exact syntax, no spaces around =).
+- Variable named after the lowercase ticker must hold the final transformed series: spy <- na.omit(diff(log(spy_monthly))).`;
 
 const FIX_CODE_PROMPT = `You fix R code that failed. The user will provide: (1) the R error message, (2) the few lines of R code around where the error occurred (snippet). You must return the FULL corrected R script as plain text — apply the fix in context of the snippet and output the entire script. Do not wrap in markdown or code fences. Do not explain. Fix the specific error (syntax, object not found, wrong column names, special characters in getSymbols). The script must end with # END OF SCRIPT.`;
 
@@ -217,6 +224,135 @@ function findGetSymbolsCalls(
   return results;
 }
 
+/**
+ * Injects real data into R code server-side so the R execution sandbox
+ * does not need any outbound network access.
+ *
+ * Handles three patterns (all with optional whitespace around "="):
+ *   1. read.csv("https://fred.stlouisfed.org/graph/fredgraph.csv?id=SERIES")
+ *   2. getSymbols("SERIES", src = "FRED", auto.assign = FALSE)
+ *   3. getSymbols("TICKER", src = "yahoo", auto.assign = FALSE)
+ */
+async function injectDataSources(code: string, fredApiKey: string): Promise<string> {
+  // --- FRED read.csv() intercept ---
+  if (fredApiKey) {
+    const fredCsvMatches = findFredCsvCalls(code);
+    for (const { fullMatch, seriesId } of fredCsvMatches) {
+      try {
+        const fredUrl =
+          `https://api.stlouisfed.org/fred/series/observations` +
+          `?series_id=${encodeURIComponent(seriesId)}&api_key=${fredApiKey}` +
+          `&file_type=json&observation_start=1990-01-01&sort_order=asc`;
+        const fredRes = await fetch(fredUrl);
+        if (!fredRes.ok) continue;
+        const fredData = (await fredRes.json()) as { observations?: { date: string; value: string }[] };
+        const obs = (fredData.observations ?? []).filter((o) => o.value !== "." && o.value !== "");
+        if (obs.length === 0) continue;
+        const dates = obs.map((o) => `"${o.date}"`).join(",");
+        const values = obs.map((o) => o.value).join(",");
+        const inlineR = `data.frame(DATE=as.Date(c(${dates})), ${seriesId}=as.numeric(c(${values})))`;
+        code = code.replace(fullMatch, inlineR);
+      } catch {
+        // Leave unchanged — R will fail with a clear error message
+      }
+    }
+  }
+
+  // --- FRED getSymbols() intercept ---
+  // Use regex so "src = "FRED"" (spaces around =) is also detected.
+  if (fredApiKey && /src\s*=\s*["']FRED["']/i.test(code)) {
+    const fredMatches = findGetSymbolsCalls(code, "FRED");
+    for (const { fullMatch, ticker: seriesId } of fredMatches) {
+      try {
+        const fredUrl =
+          `https://api.stlouisfed.org/fred/series/observations` +
+          `?series_id=${encodeURIComponent(seriesId)}&api_key=${fredApiKey}` +
+          `&file_type=json&observation_start=1990-01-01&sort_order=asc`;
+        const fredRes = await fetch(fredUrl);
+        if (!fredRes.ok) continue;
+        const fredData = (await fredRes.json()) as { observations?: { date: string; value: string }[] };
+        const obs = (fredData.observations ?? []).filter((o) => o.value !== "." && o.value !== "");
+        if (obs.length === 0) continue;
+        const dates = obs.map((o) => `"${o.date}"`).join(",");
+        const values = obs.map((o) => o.value).join(",");
+        const inlineR = `xts::xts(as.numeric(c(${values})), order.by=as.Date(c(${dates})))`;
+        code = code.replace(fullMatch, inlineR);
+      } catch {
+        // Leave unchanged — R will fail with a clear error message
+      }
+    }
+  }
+
+  // --- Yahoo Finance getSymbols() intercept ---
+  // Use regex so "src = "yahoo"" (spaces around =) is also detected.
+  if (/src\s*=\s*["']yahoo["']/i.test(code)) {
+    const yahooMatches = findGetSymbolsCalls(code, "yahoo");
+    if (yahooMatches.length > 0) {
+      const injections = await Promise.all(
+        yahooMatches.map(async (match) => {
+          const { fullMatch, ticker } = match;
+          const encoded = encodeURIComponent(ticker);
+          const urlCandidates = [
+            `https://query1.finance.yahoo.com/v8/finance/chart/${encoded}?interval=1d&range=15y`,
+            `https://query2.finance.yahoo.com/v8/finance/chart/${encoded}?interval=1d&range=15y`,
+            `https://query1.finance.yahoo.com/v8/finance/chart/${encoded}?interval=1mo&range=15y`,
+          ];
+          for (const yahooUrl of urlCandidates) {
+            try {
+              const yahooRes = await fetch(yahooUrl);
+              if (!yahooRes.ok) continue;
+              const yahooData = (await yahooRes.json()) as {
+                chart?: {
+                  result?: Array<{
+                    timestamp?: number[];
+                    indicators?: { quote?: Array<{ close?: (number | null)[] }>; adjclose?: Array<{ adjclose?: (number | null)[] }> };
+                  }>;
+                };
+              };
+              const chartResult = yahooData.chart?.result?.[0];
+              const timestamps = chartResult?.timestamp;
+              const closes =
+                chartResult?.indicators?.adjclose?.[0]?.adjclose ??
+                chartResult?.indicators?.quote?.[0]?.close;
+              if (!timestamps || !closes || timestamps.length === 0) continue;
+              const dailyPairs: { date: string; close: number }[] = [];
+              for (let i = 0; i < timestamps.length; i++) {
+                const c = closes[i];
+                if (c == null || isNaN(c)) continue;
+                dailyPairs.push({ date: new Date(timestamps[i] * 1000).toISOString().split("T")[0], close: c });
+              }
+              if (dailyPairs.length === 0) continue;
+              // Aggregate daily → monthly: take last close per YYYY-MM
+              const monthlyMap = new Map<string, { date: string; close: number }>();
+              for (const p of dailyPairs) {
+                const ym = p.date.slice(0, 7);
+                monthlyMap.set(ym, p);
+              }
+              const monthlyPairs = Array.from(monthlyMap.values());
+              if (monthlyPairs.length === 0) continue;
+              const datesStr = monthlyPairs.map((p) => `"${p.date}"`).join(",");
+              const closesStr = monthlyPairs.map((p) => p.close).join(",");
+              const colName = `${ticker.replace(/[^A-Za-z0-9]/g, ".")}.Close`;
+              const inlineR =
+                `local({ tmp <- xts::xts(as.numeric(c(${closesStr})), ` +
+                `order.by=as.Date(c(${datesStr}))); colnames(tmp) <- "${colName}"; tmp })`;
+              return { fullMatch, inlineR };
+            } catch {
+              continue;
+            }
+          }
+          return null; // all candidates failed; R falls back to live getSymbols()
+        })
+      );
+      for (const inj of injections) {
+        if (inj) code = code.replace(inj.fullMatch, inj.inlineR);
+      }
+    }
+  }
+
+  return code;
+}
+
 export async function POST(request: Request) {
   try {
     const body = (await request.json()) as {
@@ -238,15 +374,13 @@ export async function POST(request: Request) {
     codeToRun = codeToRun.replace(/^\/\//gm, "#");
     codeToRun = await sanitizeRCode(codeToRun);
 
-    // Server-side FRED data injection.
-    // The R execution server cannot reach fred.stlouisfed.org outbound.
-    // Next.js CAN reach it (verify-data.ts already does), so we download
-    // FRED observations here and replace each getSymbols(..., src="FRED")
-    // call with an inline xts object — no outbound R network call needed.
+    // Server-side data injection: replace all getSymbols() / read.csv(FRED) calls
+    // with inline xts/data.frame objects so R needs zero outbound network access.
     const fredApiKey = process.env.FRED_API_KEY ?? "";
+    // Guard: if the code needs FRED but the key is absent, fail fast with a clear message.
+    // Use a regex so "src = "FRED"" (spaces around =) is caught as well.
     const needsFred =
-      codeToRun.includes('src="FRED"') ||
-      codeToRun.includes("src='FRED'") ||
+      /src\s*=\s*["']FRED["']/i.test(codeToRun) ||
       codeToRun.includes("fred.stlouisfed.org");
     if (needsFred && !fredApiKey) {
       return NextResponse.json({
@@ -264,138 +398,7 @@ export async function POST(request: Request) {
       });
     }
 
-    // Pre-pass: intercept read.csv(fredgraph.csv?id=SERIES) calls.
-    // Claude sometimes generates these instead of getSymbols(src="FRED").
-    // Replace with an inline data.frame that mimics the CSV output, so the
-    // downstream code (which uses $DATE and $SERIES_ID columns) still works.
-    if (fredApiKey) {
-      const fredCsvMatches = findFredCsvCalls(codeToRun);
-      for (const { fullMatch, seriesId } of fredCsvMatches) {
-        try {
-          const fredUrl =
-            `https://api.stlouisfed.org/fred/series/observations` +
-            `?series_id=${encodeURIComponent(seriesId)}&api_key=${fredApiKey}` +
-            `&file_type=json&observation_start=1990-01-01&sort_order=asc`;
-          const fredRes = await fetch(fredUrl);
-          if (!fredRes.ok) continue;
-          const fredData = (await fredRes.json()) as { observations?: { date: string; value: string }[] };
-          const obs = (fredData.observations ?? []).filter((o) => o.value !== "." && o.value !== "");
-          if (obs.length === 0) continue;
-          const dates = obs.map((o) => `"${o.date}"`).join(",");
-          const values = obs.map((o) => o.value).join(",");
-          // Produce a data.frame with the same columns read.csv would return:
-          // DATE (Date) and SERIES_ID (numeric)
-          const inlineR = `data.frame(DATE=as.Date(c(${dates})), ${seriesId}=as.numeric(c(${values})))`;
-          codeToRun = codeToRun.replace(fullMatch, inlineR);
-        } catch {
-          // Leave unchanged — R will fail with a clear error message
-        }
-      }
-    }
-
-    const hasFred = codeToRun.includes('src="FRED"') || codeToRun.includes("src='FRED'");
-    if (fredApiKey && hasFred) {
-      const fredMatches = findGetSymbolsCalls(codeToRun, "FRED");
-      for (const match of fredMatches) {
-        const { fullMatch, ticker: seriesId } = match;
-        try {
-          const fredUrl =
-            `https://api.stlouisfed.org/fred/series/observations` +
-            `?series_id=${encodeURIComponent(seriesId)}&api_key=${fredApiKey}` +
-            `&file_type=json&observation_start=1990-01-01&sort_order=asc`;
-          const fredRes = await fetch(fredUrl);
-          if (!fredRes.ok) continue;
-          const fredData = (await fredRes.json()) as {
-            observations?: { date: string; value: string }[];
-          };
-          const obs = (fredData.observations ?? []).filter(
-            (o) => o.value !== "." && o.value !== ""
-          );
-          if (obs.length === 0) continue;
-          const dates = obs.map((o) => `"${o.date}"`).join(",");
-          const values = obs.map((o) => o.value).join(",");
-          // Build an inline xts identical in structure to what getSymbols returns
-          const inlineR = `xts::xts(as.numeric(c(${values})), order.by=as.Date(c(${dates})))`;
-          codeToRun = codeToRun.replace(fullMatch, inlineR);
-        } catch {
-          // Leave unchanged — R will fail with a clear error message
-        }
-      }
-    }
-
-    // Server-side Yahoo Finance data injection.
-    // Fetches daily close prices from Yahoo, aggregates to MONTHLY in JS,
-    // then injects a compact (~180-point) inline xts into the R code.
-    // Column name "TICKER.Close" lets Cl() work correctly in R code.
-    // Tries query1 then query2 as fallback; no User-Agent needed server-to-server.
-    const hasYahoo = codeToRun.includes('src="yahoo"') || codeToRun.includes("src='yahoo'");
-    if (hasYahoo) {
-      const yahooMatches = findGetSymbolsCalls(codeToRun, "yahoo");
-      if (yahooMatches.length > 0) {
-        const injections = await Promise.all(
-          yahooMatches.map(async (match) => {
-            const { fullMatch, ticker } = match;
-            const encoded = encodeURIComponent(ticker);
-            const urlCandidates = [
-              `https://query1.finance.yahoo.com/v8/finance/chart/${encoded}?interval=1d&range=15y`,
-              `https://query2.finance.yahoo.com/v8/finance/chart/${encoded}?interval=1d&range=15y`,
-              `https://query1.finance.yahoo.com/v8/finance/chart/${encoded}?interval=1mo&range=15y`,
-            ];
-            for (const yahooUrl of urlCandidates) {
-              try {
-                const yahooRes = await fetch(yahooUrl);
-                if (!yahooRes.ok) continue;
-                const yahooData = (await yahooRes.json()) as {
-                  chart?: {
-                    result?: Array<{
-                      timestamp?: number[];
-                      indicators?: { quote?: Array<{ close?: (number | null)[] }>; adjclose?: Array<{ adjclose?: (number | null)[] }> };
-                    }>;
-                  };
-                };
-                const chartResult = yahooData.chart?.result?.[0];
-                const timestamps = chartResult?.timestamp;
-                // Prefer adjusted close if available, fall back to regular close
-                const closes =
-                  chartResult?.indicators?.adjclose?.[0]?.adjclose ??
-                  chartResult?.indicators?.quote?.[0]?.close;
-                if (!timestamps || !closes || timestamps.length === 0) continue;
-                // Pair timestamps with valid (non-null) close prices
-                const dailyPairs: { date: string; close: number }[] = [];
-                for (let i = 0; i < timestamps.length; i++) {
-                  const c = closes[i];
-                  if (c == null || isNaN(c)) continue;
-                  dailyPairs.push({ date: new Date(timestamps[i] * 1000).toISOString().split("T")[0], close: c });
-                }
-                if (dailyPairs.length === 0) continue;
-                // Aggregate daily → monthly: take last close per YYYY-MM
-                // This keeps the inline payload small (~180 rows for 15y)
-                const monthlyMap = new Map<string, { date: string; close: number }>();
-                for (const p of dailyPairs) {
-                  const ym = p.date.slice(0, 7); // "YYYY-MM"
-                  monthlyMap.set(ym, p); // overwrites → keeps last day of month
-                }
-                const monthlyPairs = Array.from(monthlyMap.values());
-                if (monthlyPairs.length === 0) continue;
-                const datesStr = monthlyPairs.map((p) => `"${p.date}"`).join(",");
-                const closesStr = monthlyPairs.map((p) => p.close).join(",");
-                const colName = `${ticker.replace(/[^A-Za-z0-9]/g, ".")}.Close`;
-                const inlineR =
-                  `local({ tmp <- xts::xts(as.numeric(c(${closesStr})), ` +
-                  `order.by=as.Date(c(${datesStr}))); colnames(tmp) <- "${colName}"; tmp })`;
-                return { fullMatch, inlineR };
-              } catch {
-                continue; // try next URL candidate
-              }
-            }
-            return null; // all candidates failed; R falls back to live getSymbols()
-          })
-        );
-        for (const inj of injections) {
-          if (inj) codeToRun = codeToRun.replace(inj.fullMatch, inj.inlineR);
-        }
-      }
-    }
+    codeToRun = await injectDataSources(codeToRun, fredApiKey);
 
     // Logical completeness check: find variables used in merge() and verify
     // each has an assignment (<-) earlier in the code. Claude sometimes generates
@@ -422,8 +425,8 @@ export async function POST(request: Request) {
         try {
           const client = new Anthropic({ apiKey });
           const incompleteMsg = isLogicallyIncomplete && codeToRun.includes("# END OF SCRIPT")
-            ? `This R script is structurally complete but logically incomplete — the following variables are used in merge() but never defined: ${undefinedMergeVars.join(", ")}. Add all missing variable definitions (data loading, transformations) in the correct position and return the full corrected script:`
-            : "Your R code was cut off, please complete it:";
+            ? `This R script is structurally complete but logically incomplete — the following variables are used in merge() but never defined: ${undefinedMergeVars.join(", ")}. Add the missing getSymbols() calls (src="FRED" or src="yahoo") and transformations in the correct position. NEVER use synthetic data or NULL fallbacks — use real getSymbols() calls, exact syntax, no spaces around =. Return the full corrected script:`
+            : "Your R code was cut off, please complete it. NEVER use synthetic placeholder data:";
           const msg = await client.messages.create({
             model: "claude-sonnet-4-6",
             max_tokens: 8192,
@@ -435,7 +438,12 @@ export async function POST(request: Request) {
             let completed = (textBlock as { text: string }).text.trim();
             const codeFence = completed.match(/```(?:r)?\s*([\s\S]*?)```/);
             if (codeFence) completed = codeFence[1].trim();
-            if (completed.length > 0) codeToRun = completed;
+            if (completed.length > 0) {
+              codeToRun = completed;
+              // Re-inject data sources: the completed code may contain new
+              // getSymbols() calls that were not yet replaced with inline data.
+              codeToRun = await injectDataSources(codeToRun, fredApiKey);
+            }
           }
         } catch (e) {
           console.error("Failed to complete truncated R code:", e);
