@@ -62,6 +62,30 @@ When the user says "crude oil", "oil prices", or "oil" (and does not specify ano
 24. *** NEVER call Cl() on a monthly xts. Always call Cl() on the raw daily xts FIRST, then pass the single-column result to to.monthly(). Calling Cl() on the output of to.monthly() causes "subscript out of bounds: no or multiple column name containing Close". ***
 25. *** NEVER use periodReturn(), dailyReturn(), monthlyReturn(), weeklyReturn(), or annualReturn(). These quantmod functions have a type argument that MUST be exactly "continuous" or "discrete" — passing any other value (e.g. "log", "arithmetic", "geometric") throws the error "'arg' should be one of continuous, discrete". ALWAYS compute log returns as na.omit(diff(log(Cl(x)))) instead. ***
 
+=== AUTO-TRANSFORMATION DEFAULTS (apply when user does NOT explicitly specify the data format) ===
+
+26. *** CRITICAL — CHOOSE THE RIGHT TRANSFORMATION AUTOMATICALLY based on the series type. Do NOT blindly use raw levels for everything — raw levels of non-stationary series (prices, price indices) produce spuriously high R² (e.g. 99.86%) and economically meaningless regressions. Apply these defaults unless the user explicitly asks for a specific format:
+
+    YAHOO FINANCE (stocks, ETFs, indices):
+      → ALWAYS use log returns: na.omit(diff(log(to.monthly(Cl(x), ...))))
+      → NEVER use raw price levels — "closing prices" in the prompt identifies the SOURCE DATA, not the regression format.
+
+    FRED PRICE INDICES (CPIAUCSL, PCEPI, GDPDEF, PCE):
+      → ALWAYS use log changes (inflation rate): na.omit(diff(log(x_raw)))
+      → NEVER use the raw index level — it is non-stationary and creates spurious correlation with equity returns.
+
+    FRED INTEREST RATES (FEDFUNDS, DGS10, GS10, TB3MS, FEDFUNDS):
+      → Use level (as-is) by default — rates are already in % and are a natural predictor in levels.
+      → Use first differences (na.omit(diff(x_raw))) only if user asks for "changes in rates" or "rate changes".
+
+    FRED LABOR / ACTIVITY RATES (UNRATE, CIVPART, U6RATE):
+      → Use level (as-is) by default — unemployment rate in % is a natural predictor in levels.
+
+    FRED AGGREGATE / COUNT SERIES (PAYEMS, INDPRO, M2SL, GDPC1, HOUST):
+      → Use log changes: na.omit(diff(log(x_raw))) — converts to growth rates.
+
+    OVERRIDE: If the user explicitly specifies "use levels", "use raw prices", "use the index value", or similar language, honor that request and ignore these defaults. ***
+
 === R TEMPLATE — FRED+Yahoo Mixed (use when ANY variable is FRED) ===
 
 tryCatch({
