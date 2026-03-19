@@ -166,10 +166,23 @@ async function generateOneAutoFix(
 }
 
 /**
- * Extract getSymbols() calls from R code using balanced-paren matching.
- * Works regardless of argument order, whitespace, or line breaks inside the call.
- * Only returns calls where src="SOURCE" appears anywhere in the argument list.
+ * Find read.csv() calls that fetch directly from fred.stlouisfed.org.
+ * Claude sometimes generates these instead of getSymbols(src="FRED").
+ * Returns the full match and extracted series ID so we can replace with inline data.
+ * Handles both: read.csv("https://fred.stlouisfed.org/graph/fredgraph.csv?id=SERIES")
+ *           and: read.csv(url("https://..."))
  */
+function findFredCsvCalls(code: string): Array<{ fullMatch: string; seriesId: string }> {
+  const results: Array<{ fullMatch: string; seriesId: string }> = [];
+  const regex =
+    /read\.csv\s*\(\s*(?:url\s*\(\s*)?["']https?:\/\/fred\.stlouisfed\.org\/graph\/fredgraph\.csv[?][^"']*\bid=([A-Z0-9_]+)[^"']*["']\s*(?:\))?\s*\)/g;
+  let match;
+  while ((match = regex.exec(code)) !== null) {
+    results.push({ fullMatch: match[0], seriesId: match[1] });
+  }
+  return results;
+}
+
 function findGetSymbolsCalls(
   code: string,
   source: "yahoo" | "FRED"
@@ -231,6 +244,36 @@ export async function POST(request: Request) {
     // FRED observations here and replace each getSymbols(..., src="FRED")
     // call with an inline xts object — no outbound R network call needed.
     const fredApiKey = process.env.FRED_API_KEY ?? "";
+
+    // Pre-pass: intercept read.csv(fredgraph.csv?id=SERIES) calls.
+    // Claude sometimes generates these instead of getSymbols(src="FRED").
+    // Replace with an inline data.frame that mimics the CSV output, so the
+    // downstream code (which uses $DATE and $SERIES_ID columns) still works.
+    if (fredApiKey) {
+      const fredCsvMatches = findFredCsvCalls(codeToRun);
+      for (const { fullMatch, seriesId } of fredCsvMatches) {
+        try {
+          const fredUrl =
+            `https://api.stlouisfed.org/fred/series/observations` +
+            `?series_id=${encodeURIComponent(seriesId)}&api_key=${fredApiKey}` +
+            `&file_type=json&observation_start=1990-01-01&sort_order=asc`;
+          const fredRes = await fetch(fredUrl);
+          if (!fredRes.ok) continue;
+          const fredData = (await fredRes.json()) as { observations?: { date: string; value: string }[] };
+          const obs = (fredData.observations ?? []).filter((o) => o.value !== "." && o.value !== "");
+          if (obs.length === 0) continue;
+          const dates = obs.map((o) => `"${o.date}"`).join(",");
+          const values = obs.map((o) => o.value).join(",");
+          // Produce a data.frame with the same columns read.csv would return:
+          // DATE (Date) and SERIES_ID (numeric)
+          const inlineR = `data.frame(DATE=as.Date(c(${dates})), ${seriesId}=as.numeric(c(${values})))`;
+          codeToRun = codeToRun.replace(fullMatch, inlineR);
+        } catch {
+          // Leave unchanged — R will fail with a clear error message
+        }
+      }
+    }
+
     const hasFred = codeToRun.includes('src="FRED"') || codeToRun.includes("src='FRED'");
     if (fredApiKey && hasFred) {
       const fredMatches = findGetSymbolsCalls(codeToRun, "FRED");

@@ -54,7 +54,7 @@ When the user says "crude oil", "oil prices", or "oil" (and does not specify ano
 
 === FRED DATA RULES (apply when ANY variable uses src="FRED") ===
 18. When ANY variable is FRED, use the FRED+Yahoo Mixed template (below) instead of the Yahoo-only template.
-19. FRED fetch: NAME_raw <- getSymbols("FRED_ID", src="FRED", auto.assign=FALSE). The User-Agent option is NOT needed for FRED — only set it for Yahoo calls.
+19. FRED fetch: NAME_raw <- getSymbols("FRED_ID", src="FRED", auto.assign=FALSE). The User-Agent option is NOT needed for FRED — only set it for Yahoo calls. *** NEVER use read.csv(), download.file(), url(), httr, or curl to fetch FRED data from fred.stlouisfed.org or api.stlouisfed.org. These will ALWAYS fail — the R execution server has no internet access. ONLY getSymbols(src="FRED") calls are intercepted and replaced with pre-fetched data by the system. ***
 20. Yahoo daily → monthly: NAME_close <- Cl(NAME_raw); NAME_monthly <- to.monthly(NAME_close, indexAt="lastof", OHLC=FALSE); NAME <- na.omit(diff(log(NAME_monthly))); index(NAME) <- as.yearmon(index(NAME)). Do NOT call Cl() on NAME_monthly — Cl() must be called on the raw daily xts first (see rule 24).
 21. *** CRITICAL — ALWAYS convert EVERY series index to yearmon with index(x) <- as.yearmon(index(x)) BEFORE merge(). Without this, Yahoo month-end dates (e.g. "2010-01-29") never match FRED first-of-month dates ("2010-01-01"), and merge() returns zero rows → "0 (non-NA) cases". ***
 22. *** CRITICAL NAMING — ALL variables (Yahoo AND FRED) use the plain short name in merge(), colnames(), and lm(). This is a single global rule with no exceptions:
