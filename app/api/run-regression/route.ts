@@ -244,6 +244,25 @@ export async function POST(request: Request) {
     // FRED observations here and replace each getSymbols(..., src="FRED")
     // call with an inline xts object — no outbound R network call needed.
     const fredApiKey = process.env.FRED_API_KEY ?? "";
+    const needsFred =
+      codeToRun.includes('src="FRED"') ||
+      codeToRun.includes("src='FRED'") ||
+      codeToRun.includes("fred.stlouisfed.org");
+    if (needsFred && !fredApiKey) {
+      return NextResponse.json({
+        success: false,
+        stdout: "",
+        stderr: "",
+        exitCode: 1,
+        interpretation: "",
+        economicValidation: "",
+        chartData: null,
+        error: "FRED_API_KEY is not configured",
+        dataUnavailable: true,
+        userMessage:
+          "FRED_API_KEY is not set. Get a free key at https://fred.stlouisfed.org/docs/api/api_key.html, then add FRED_API_KEY=your_key to your .env.local file and restart the server.",
+      });
+    }
 
     // Pre-pass: intercept read.csv(fredgraph.csv?id=SERIES) calls.
     // Claude sometimes generates these instead of getSymbols(src="FRED").
