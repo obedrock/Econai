@@ -17,6 +17,15 @@ import {
   Legend,
 } from "recharts";
 
+async function safeJson<T>(res: Response, fallbackMsg: string): Promise<T> {
+  const text = await res.text();
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new Error(text.slice(0, 120).trim() || fallbackMsg);
+  }
+}
+
 type Step = "idle" | "analyzing" | "verifying" | "running" | "done" | "error";
 
 type ChartData = {
@@ -245,7 +254,7 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: text }),
       });
-      const identifyData = await identifyRes.json();
+      const identifyData = await safeJson<{ variables?: { source: string; term: string }[]; error?: string }>(identifyRes, "Server timed out — please try again");
       if (!identifyRes.ok) {
         setError(identifyData.error ?? "Could not identify data sources");
         setStep("error");
@@ -290,7 +299,7 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: text, verifiedVariables }),
       });
-      const codeData = await codeRes.json();
+      const codeData = await safeJson<{ rCode?: string; error?: string }>(codeRes, "Code generation timed out — please try again");
       if (!codeRes.ok) {
         setError(codeData.error ?? "Code generation failed");
         setStep("error");
@@ -329,7 +338,7 @@ export default function Home() {
             previousCorrections: corrections,
           }),
         });
-        runData = await runRes.json();
+        runData = await safeJson<typeof runData>(runRes, "Regression timed out — please try again");
         if (!runRes.ok) {
           setError(runData.error ?? "Run failed");
           setStep("error");

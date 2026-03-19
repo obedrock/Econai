@@ -359,8 +359,11 @@ export async function POST(request: Request) {
       const retryReason = !rCode.includes("lm(")
         ? "Your previous output was missing the lm() regression call."
         : `Your previous output was missing definitions for: ${undefinedInMerge.join(", ")}. These variables appear in merge() but are never assigned — you must include ALL data-loading steps from the template (Yahoo getSymbols, every FRED getSymbols, transformations).`;
-      const retryResponse = await client.messages.create({
-        model: "claude-sonnet-4-6",
+      // Use Haiku for the completeness retry — it's faster (reduces timeout risk)
+      // and this task is simpler: just fill in the missing sections from the template.
+      const retryClient = new Anthropic({ apiKey });
+      const retryResponse = await retryClient.messages.create({
+        model: "claude-haiku-4-5-20251001",
         max_tokens: 4096,
         system: systemPrompt,
         messages: [
