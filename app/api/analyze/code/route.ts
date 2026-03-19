@@ -57,7 +57,26 @@ When the user says "crude oil", "oil prices", or "oil" (and does not specify ano
 19. FRED fetch: NAME_raw <- getSymbols("FRED_ID", src="FRED", auto.assign=FALSE). The User-Agent option is NOT needed for FRED — only set it for Yahoo calls.
 20. Yahoo daily → monthly: NAME_close <- Cl(NAME_raw); NAME_monthly <- to.monthly(NAME_close, indexAt="lastof", OHLC=FALSE); NAME <- na.omit(diff(log(NAME_monthly))); index(NAME) <- as.yearmon(index(NAME)). Do NOT call Cl() on NAME_monthly — Cl() must be called on the raw daily xts first (see rule 24).
 21. *** CRITICAL — ALWAYS convert EVERY series index to yearmon with index(x) <- as.yearmon(index(x)) BEFORE merge(). Without this, Yahoo month-end dates (e.g. "2010-01-29") never match FRED first-of-month dates ("2010-01-01"), and merge() returns zero rows → "0 (non-NA) cases". ***
-22. FRED rate/level series (FEDFUNDS, UNRATE, DGS10, TB3MS, etc.): assign raw xts as-is — do NOT compute diff(log()). FRED price index series (CPIAUCSL, PCEPI, GDPDEF, etc.): compute inflation = na.omit(diff(log(x))). Either way, convert index to yearmon afterward. *** CRITICAL NAMING: the final variable name (used in merge, colnames, AND lm) must be the plain short name, e.g. cpi for CPIAUCSL, fedfunds for FEDFUNDS, unrate for UNRATE. Fetch to NAME_raw, then assign NAME <- <transformation>. NEVER use suffixes like cpi_change, cpi_diff, cpi_inflation, delta_cpi, fedfunds_diff, unrate_change — these cause "object not found" errors because the merge/lm still reference the plain short name. THIS RULE APPLIES NO MATTER WHAT TRANSFORMATION IS REQUESTED: whether the user asks for levels, log-differences, or arithmetic first-differences, the variable name is always the plain short name. Example: if asked for arithmetic first-differences, write fedfunds <- na.omit(diff(fedfunds_raw)), NOT fedfunds_diff <- na.omit(diff(fedfunds_raw)). ***
+22. *** CRITICAL NAMING — ALL variables (Yahoo AND FRED) use the plain short name in merge(), colnames(), and lm(). This is a single global rule with no exceptions:
+
+    YAHOO TICKERS: The final variable is named after the lowercase ticker. SPY → spy, QQQ → qqq, AAPL → aapl.
+      spy_raw <- getSymbols("SPY", src="yahoo", auto.assign=FALSE)
+      spy_close <- Cl(spy_raw)
+      spy_monthly <- to.monthly(spy_close, indexAt="lastof", OHLC=FALSE)
+      spy <- na.omit(diff(log(spy_monthly)))   ← final name is "spy", always
+      NEVER: spy_returns, spy_log_returns, spy_prices, spy_monthly_returns or any suffix.
+
+    FRED SERIES: The final variable is the lowercase short name. CPIAUCSL → cpi, FEDFUNDS → fedfunds, UNRATE → unrate.
+      cpi_raw <- getSymbols("CPIAUCSL", src="FRED", auto.assign=FALSE)
+      cpi <- na.omit(diff(log(cpi_raw)))   ← final name is "cpi", always
+      NEVER: cpi_change, cpi_diff, cpi_inflation, delta_cpi or any suffix.
+
+    This rule applies regardless of what transformation is used (levels, log-diff, arithmetic diff). The transformation changes; the variable name never does. ***
+
+    FRED series transformation defaults (when user does not specify):
+      - Rate/level series (FEDFUNDS, UNRATE, DGS10, TB3MS, etc.): assign raw xts as-is — do NOT compute diff(log()).
+      - Price index series (CPIAUCSL, PCEPI, GDPDEF, etc.): compute inflation = na.omit(diff(log(x))).
+      Either way, convert index to yearmon afterward.
 23. Multiple regression (N predictors): lm(y ~ x1 + x2 + ... + xN, data=df). colnames(df) must list ALL N+1 variables in the same order as merge().
 24. *** NEVER call Cl() on a monthly xts. Always call Cl() on the raw daily xts FIRST, then pass the single-column result to to.monthly(). Calling Cl() on the output of to.monthly() causes "subscript out of bounds: no or multiple column name containing Close". ***
 25. *** NEVER use periodReturn(), dailyReturn(), monthlyReturn(), weeklyReturn(), or annualReturn(). These quantmod functions have a type argument that MUST be exactly "continuous" or "discrete" — passing any other value (e.g. "log", "arithmetic", "geometric") throws the error "'arg' should be one of continuous, discrete". ALWAYS compute log returns as na.omit(diff(log(Cl(x)))) instead. ***
